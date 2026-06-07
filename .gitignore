@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv
+venv/
+ENV/
+env/
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build outputs
+build/
+dist*/
+Output/
+
+# PyInstaller
+*.spec
+
+# Test outputs
+test_output.txt

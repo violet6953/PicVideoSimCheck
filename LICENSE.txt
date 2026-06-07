@@ -1,0 +1,18 @@
+PicSimProcess License
+
+Copyright (c) 2024
+
+This software is provided as-is for personal and commercial use.
+
+Third-Party Libraries:
+This software includes or depends on the following open-source libraries:
+- Flask (BSD License)
+- Pillow (HPND License)
+- NumPy (BSD License)
+- OpenCV (Apache-2.0 License)
+- imagehash (BSD License)
+- scikit-image (BSD License)
+- scikit-learn (BSD License)
+- PyTorch (BSD License)
+
+All trademarks and copyrights belong to their respective owners.
