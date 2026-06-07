@@ -21,12 +21,12 @@ Thumbs.db
 *.iml
 
 # Build outputs
-build/
 dist*/
 Output/
 
-# PyInstaller
-*.spec
+# PyInstaller build intermediates (keep .spec configs in build/)
+build/PicSimProcess-*/
+build/__pycache__/
 
 # Test outputs
 test_output.txt
