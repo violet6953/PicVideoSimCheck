@@ -199,6 +199,8 @@ class MainWindow(QMainWindow):
             current=state.get("stage_current", 0),
             total=state.get("stage_total", 0),
             message=state.get("message", ""),
+            detail_current=state.get("detail_current"),
+            detail_total=state.get("detail_total"),
         )
 
     def _on_scan_complete(self, groups: list[dict]) -> None:

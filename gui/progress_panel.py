@@ -40,7 +40,15 @@ class ProgressPanel(QFrame):
 
         layout.addStretch()
 
-    def update_progress(self, stage: str, current: int, total: int, message: str) -> None:
+    def update_progress(
+        self,
+        stage: str,
+        current: int,
+        total: int,
+        message: str,
+        detail_current: int | None = None,
+        detail_total: int | None = None,
+    ) -> None:
         self.setVisible(True)
         self.stage_badge.setText(stage or "准备中")
 
@@ -62,7 +70,9 @@ class ProgressPanel(QFrame):
         stats = ""
         if total > 0:
             pct = min(100, int((current / total) * 100))
-            if stage == "扫描文件":
+            if detail_current is not None and detail_total is not None:
+                stats = f"{detail_current} / {detail_total}"
+            elif stage == "扫描文件":
                 stats = "扫描中..."
             elif stage == "图片特征提取":
                 stats = f"{current} / {total} 张"

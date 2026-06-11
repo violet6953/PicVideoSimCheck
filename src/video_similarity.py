@@ -131,7 +131,7 @@ class VideoSimilarity:
         self,
         video_paths: list[str | Path],
         indices: list[int],
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> list[list[np.ndarray]]:
         """Extract keyframes from multiple videos in parallel using the class pool.
 
@@ -150,16 +150,24 @@ class VideoSimilarity:
         futures = {self._load_pool.submit(_worker, idx): i for i, idx in enumerate(indices)}
         results: list[list[np.ndarray]] = [[] for _ in indices]
         completed = 0
+        frames_completed = 0
         for future in as_completed(futures):
             pos = futures[future]
             try:
-                results[pos] = future.result()
+                frames = future.result()
+                results[pos] = frames
+                frames_completed += len(frames)
             except Exception:
                 results[pos] = []
             completed += 1
-            if progress_callback and progress_callback(completed, total):
-                # Cancellation is handled at the batch level; just stop reporting.
-                pass
+            if progress_callback:
+                metadata = {
+                    "phase": "keyframes",
+                    "frames_completed": frames_completed,
+                }
+                if progress_callback(completed, total, metadata):
+                    # Cancellation is handled at the batch level; just stop reporting.
+                    pass
         return results
 
     def _flatten_frames(
@@ -179,7 +187,7 @@ class VideoSimilarity:
         self,
         frames: list[np.ndarray],
         batch_size: int = 64,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> np.ndarray:
         """Extract ResNet50 features for RGB numpy arrays."""
         if not frames:
@@ -296,7 +304,7 @@ class VideoSimilarity:
         video_paths: list[str | Path],
         threshold: float = 0.90,
         batch_size: int = 64,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> list[tuple[Path, Path, float]]:
         """Find duplicate/similar video pairs with memory-aware batch processing.
 
@@ -351,10 +359,20 @@ class VideoSimilarity:
                 sizer.pre_batch()
 
             # ---- Parallel keyframe extraction ----
-            def _keyframe_progress(completed_in_batch: int, batch_total: int) -> bool:
+            def _keyframe_progress(
+                completed_in_batch: int, batch_total: int, metadata: dict | None = None
+            ) -> bool:
                 if progress_callback:
                     global_current = batch_start + completed_in_batch
-                    return progress_callback(global_current, total_progress_units)
+                    frames_completed = metadata.get("frames_completed", 0) if metadata else 0
+                    extra = {
+                        "phase": "keyframes",
+                        "videos_completed": global_current,
+                        "videos_total": n,
+                        "frames_completed": frames_completed,
+                        "frames_total": n * self.max_frames_per_video,
+                    }
+                    return progress_callback(global_current, total_progress_units, extra)
                 return False
 
             batch_frames_list = self._extract_keyframes_parallel(
@@ -369,7 +387,14 @@ class VideoSimilarity:
             # Final Phase 1 progress report for this batch (keyframe extraction: 0 ~ n)
             if progress_callback:
                 progress_current = batch_end
-                if progress_callback(progress_current, total_progress_units):
+                extra = {
+                    "phase": "keyframes",
+                    "videos_completed": progress_current,
+                    "videos_total": n,
+                    "frames_completed": sum(len(f) for f in batch_frames_list),
+                    "frames_total": n * self.max_frames_per_video,
+                }
+                if progress_callback(progress_current, total_progress_units, extra):
                     raise CancelledError()
 
             # ---- Feature extraction ----
@@ -389,7 +414,12 @@ class VideoSimilarity:
                 # Report Phase 2 progress (feature extraction: n ~ 2n)
                 if progress_callback:
                     progress_current = n + batch_end
-                    if progress_callback(progress_current, total_progress_units):
+                    extra = {
+                        "phase": "features",
+                        "videos_completed": batch_end,
+                        "videos_total": n,
+                    }
+                    if progress_callback(progress_current, total_progress_units, extra):
                         raise CancelledError()
 
             # ---- Release keyframe memory immediately ----
@@ -443,12 +473,22 @@ class VideoSimilarity:
                 if progress_callback and pair_idx % 10 == 0:
                     # Map pair progress to Phase 3 range (2n ~ 3n)
                     progress_current = int(2 * n + (pair_idx / total_pairs) * n)
-                    if progress_callback(progress_current, total_progress_units):
+                    extra = {
+                        "phase": "compare",
+                        "pairs_completed": pair_idx,
+                        "pairs_total": total_pairs,
+                    }
+                    if progress_callback(progress_current, total_progress_units, extra):
                         raise CancelledError()
 
         # Ensure we end at exactly 3n for a clean progress bar
         if progress_callback:
-            if progress_callback(total_progress_units, total_progress_units):
+            extra = {
+                "phase": "compare",
+                "pairs_completed": total_pairs,
+                "pairs_total": total_pairs,
+            }
+            if progress_callback(total_progress_units, total_progress_units, extra):
                 raise CancelledError()
 
         del stacked_features
@@ -464,7 +504,7 @@ class VideoSimilarity:
         video_paths: list[str | Path],
         threshold: float = 0.90,
         batch_size: int = 64,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> list[tuple[Path, Path, float]]:
         return self.find_duplicates(
             video_paths,

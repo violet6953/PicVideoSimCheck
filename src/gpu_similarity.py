@@ -77,7 +77,7 @@ class GPUSimilarity:
         self,
         image_paths: list[str | Path],
         batch_size: int = 128,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> np.ndarray:
         features: list[np.ndarray] = []
         total = len(image_paths)
@@ -87,7 +87,7 @@ class GPUSimilarity:
 
         with torch.no_grad():
             for batch_start in range(0, total, batch_size):
-                if progress_callback and progress_callback(batch_start, total):
+                if progress_callback and progress_callback(batch_start, total, None):
                     raise CancelledError()
 
                 batch_paths = image_paths[batch_start : batch_start + batch_size]
@@ -152,7 +152,7 @@ class GPUSimilarity:
         image_paths: list[str | Path],
         threshold: float = 0.85,
         batch_size: int = 128,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> list[tuple[Path, Path, float]]:
         if len(image_paths) < 2:
             return []
@@ -180,7 +180,7 @@ class GPUSimilarity:
         image_paths: list[str | Path],
         threshold: float = 0.85,
         sim_batch_size: int = 2000,
-        progress_callback: Callable[[int, int], bool] | None = None,
+        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
     ) -> list[tuple[Path, Path, float]]:
         """
         Optimized for large-scale comparison (100k+ images).
@@ -196,7 +196,7 @@ class GPUSimilarity:
             progress_callback=progress_callback,
         )
 
-        if progress_callback and progress_callback(0, 100):
+        if progress_callback and progress_callback(0, 100, None):
             raise CancelledError()
 
         # Normalize features
@@ -213,7 +213,7 @@ class GPUSimilarity:
 
         # Batched similarity computation
         for batch_start in range(0, n, sim_batch_size):
-            if progress_callback and progress_callback(batch_start, n):
+            if progress_callback and progress_callback(batch_start, n, None):
                 raise CancelledError()
 
             batch_end = min(batch_start + sim_batch_size, n)

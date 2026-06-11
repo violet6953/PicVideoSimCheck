@@ -119,7 +119,7 @@ class ScanWorker(QThread):
 
                     gpu_sim = GPUSimilarity()
 
-                    def img_extract_progress(current: int, total: int) -> bool:
+                    def img_extract_progress(current: int, total: int, metadata: dict | None = None) -> bool:
                         self._emit_progress(
                             stage="图片特征提取",
                             current=current,
@@ -264,20 +264,37 @@ class ScanWorker(QThread):
                     max_frames_per_video=self.video_max_frames,
                 )
 
-                def video_progress(current: int, total: int) -> bool:
+                def video_progress(current: int, total: int, metadata: dict | None = None) -> bool:
                     n = total // 3
+                    phase = metadata.get("phase", "") if metadata else ""
+
                     if current < n:
+                        # Keyframe phase: stats show actual keyframe count
+                        frames_completed = metadata.get("frames_completed", current) if metadata else current
+                        frames_total = metadata.get("frames_total", n) if metadata else n
+                        detail_current = frames_completed
+                        detail_total = frames_total
                         message = f"正在提取第 {current} 个视频的关键帧（共 {n} 个视频）"
                     elif current < 2 * n:
+                        # Feature phase: stats show video count
+                        detail_current = current - n
+                        detail_total = n
                         message = f"正在提取第 {current - n} 个视频的特征（共 {n} 个视频）"
                     else:
-                        message = f"正在比较第 {current - 2 * n} 对视频的相似度（共 {n} 对）"
+                        # Compare phase: stats show pair count
+                        pairs_completed = metadata.get("pairs_completed", current - 2 * n) if metadata else current - 2 * n
+                        pairs_total = metadata.get("pairs_total", n) if metadata else n
+                        detail_current = pairs_completed
+                        detail_total = pairs_total
+                        message = f"正在比较第 {pairs_completed} 对视频的相似度（共 {pairs_total} 对）"
 
                     self._emit_progress(
                         stage="视频相似度检测",
                         current=current,
                         total=total,
                         message=message,
+                        detail_current=detail_current,
+                        detail_total=detail_total,
                     )
                     return self.cancel_event.is_set()
 
@@ -468,10 +485,20 @@ class ScanWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(str(e))
 
-    def _emit_progress(self, stage: str, current: int, total: int, message: str) -> None:
+    def _emit_progress(
+        self,
+        stage: str,
+        current: int,
+        total: int,
+        message: str,
+        detail_current: int | None = None,
+        detail_total: int | None = None,
+    ) -> None:
         self.progress.emit({
             "stage": stage,
             "stage_current": current,
             "stage_total": total,
             "message": message,
+            "detail_current": detail_current,
+            "detail_total": detail_total,
         })
