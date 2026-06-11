@@ -412,7 +412,10 @@ def calculate_batch_size(
     )
 
     batch_size = memory_limit // keyframe_mem_per_video
-    batch_size = max(1, min(batch_size, video_count))
+    # Keyframe memory is temporary (freed right after feature extraction),
+    # so we can afford a larger initial batch and let AdaptiveBatchSizer
+    # shrink it only if real memory pressure is observed.
+    batch_size = max(1, min(batch_size * 2, video_count))
 
     peak_keyframe_mem = batch_size * keyframe_mem_per_video
     total_feature_mem = estimate_feature_memory(2048, video_count, avg_frame_count)
@@ -544,17 +547,17 @@ class AdaptiveBatchSizer:
         ratio = ram_ratio if ram_ratio > gpu_ratio else gpu_ratio
         constrained = "显存" if gpu_ratio > ram_ratio else "内存"
 
-        # 4. adjust
+        # 4. adjust (conservative: only shrink when truly close to the limit)
         old = self.current
-        if ratio > 0.92:
+        if ratio > 0.95:
             self.current = max(self.min_batch, int(self.current * 0.5))
             self._has_reduced = True
             logger.warning("[内存] %s %.0f%% 超限 → 批次 %d→%d", constrained, ratio * 100, old, self.current)
-        elif ratio > 0.80:
-            self.current = max(self.min_batch, int(self.current * 0.7))
+        elif ratio > 0.90:
+            self.current = max(self.min_batch, int(self.current * 0.75))
             self._has_reduced = True
             logger.info("[内存] %s %.0f%% 偏高 → 批次 %d→%d", constrained, ratio * 100, old, self.current)
-        elif ratio < 0.55 and self._has_reduced:
+        elif ratio < 0.70 and self._has_reduced:
             self.current = min(self.initial, int(self.current * 1.25))
             if self.current >= self.initial:
                 self._has_reduced = False

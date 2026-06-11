@@ -95,21 +95,34 @@ class VideoSimilarity:
             frame_indices = [min(int(i * step), total_frames - 1) for i in range(target_count)]
 
         frames: list[np.ndarray] = []
-        # Sequential read with frame skipping is much faster than cap.set()
-        # for most video codecs (H.264/HEVC), because non-keyframe seeking often
-        # forces the decoder to restart from the previous keyframe.
-        target_iter = iter(frame_indices)
-        next_target = next(target_iter, None)
-        frame_idx = 0
-        while next_target is not None:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                break
-            if frame_idx == next_target:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(rgb)
-                next_target = next(target_iter, None)
-            frame_idx += 1
+        # Choose reading strategy based on sampling density.
+        # - Sparse sampling (typical case: 32 frames from thousands): use seek.
+        #   OpenCV/ffmpeg seeks to the nearest keyframe then decodes forward,
+        #   which is much faster than decoding the whole video sequentially.
+        # - Dense sampling (>50% of frames): sequential read is more efficient.
+        sampling_ratio = target_count / total_frames if total_frames > 0 else 1.0
+        use_sequential = sampling_ratio > 0.5
+
+        if use_sequential:
+            target_iter = iter(frame_indices)
+            next_target = next(target_iter, None)
+            frame_idx = 0
+            while next_target is not None:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    break
+                if frame_idx == next_target:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(rgb)
+                    next_target = next(target_iter, None)
+                frame_idx += 1
+        else:
+            for idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(rgb)
 
         cap.release()
         return frames
