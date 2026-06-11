@@ -16,7 +16,7 @@
 ; =============================================================================
 
 #define AppName "PicSimProcess GPU"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.3"
 #define AppPublisher "PicSimProcess"
 #define AppURL ""
 #define AppExeName "PicSimProcess.exe"

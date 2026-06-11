@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,10 +10,18 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
+)
+
+from src.memory_utils import (
+    get_current_process_memory_bytes,
+    get_gpu_memory_info,
+    get_peak_memory_from_counters,
+    get_system_memory,
 )
 
 
@@ -29,6 +37,93 @@ class SettingsPanel(QFrame):
         self.setObjectName("panel")
         self._folders: list[str] = []
         self._init_ui()
+        self._init_monitor_timer()
+
+    def _init_monitor_timer(self) -> None:
+        """Start a timer that refreshes RAM/VRAM usage every second."""
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.timeout.connect(self._refresh_monitor)
+        self._monitor_timer.start(1000)
+        self._refresh_monitor()  # initial read
+
+    def _refresh_monitor(self) -> None:
+        """Read system memory and GPU VRAM, update progress bars."""
+        # --- System RAM ---
+        try:
+            total, avail = get_system_memory()
+            if total > 0:
+                used_pct = int((total - avail) / total * 100)
+                self.ram_bar.setValue(used_pct)
+                self.ram_pct.setText(f"{used_pct}%")
+                # Color by severity
+                if used_pct >= 85:
+                    self.ram_bar.setStyleSheet("""
+                        QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                        QProgressBar::chunk { background-color: #ef4444; border-radius: 4px; }
+                    """)
+                elif used_pct >= 70:
+                    self.ram_bar.setStyleSheet("""
+                        QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                        QProgressBar::chunk { background-color: #f59e0b; border-radius: 4px; }
+                    """)
+                else:
+                    self.ram_bar.setStyleSheet("""
+                        QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                        QProgressBar::chunk { background-color: #3b82f6; border-radius: 4px; }
+                    """)
+            else:
+                self.ram_bar.setValue(0)
+                self.ram_pct.setText("N/A")
+        except Exception:
+            self.ram_bar.setValue(0)
+            self.ram_pct.setText("N/A")
+
+        # --- GPU VRAM ---
+        try:
+            gpu_info = get_gpu_memory_info()
+            if gpu_info:
+                # Find the device with highest usage ratio
+                max_ratio = 0.0
+                max_used = 0
+                max_total = 0
+                for dev_id, info in gpu_info.items():
+                    total_vram = info.get("total", 0)
+                    used = info.get("used", 0)
+                    if total_vram > 0:
+                        ratio = used / total_vram
+                        if ratio > max_ratio:
+                            max_ratio = ratio
+                            max_used = used
+                            max_total = total_vram
+
+                if max_total > 0:
+                    vram_pct = int(max_ratio * 100)
+                    self.vram_bar.setValue(vram_pct)
+                    self.vram_pct.setText(f"{vram_pct}%")
+                    if vram_pct >= 85:
+                        self.vram_bar.setStyleSheet("""
+                            QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                            QProgressBar::chunk { background-color: #ef4444; border-radius: 4px; }
+                        """)
+                    elif vram_pct >= 70:
+                        self.vram_bar.setStyleSheet("""
+                            QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                            QProgressBar::chunk { background-color: #f59e0b; border-radius: 4px; }
+                        """)
+                    else:
+                        self.vram_bar.setStyleSheet("""
+                            QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                            QProgressBar::chunk { background-color: #a855f7; border-radius: 4px; }
+                        """)
+                else:
+                    self.vram_bar.setValue(0)
+                    self.vram_pct.setText("--%")
+            else:
+                self.vram_bar.setValue(0)
+                self.vram_pct.setText("--%")
+        except Exception:
+            self.vram_bar.setValue(0)
+            self.vram_pct.setText("--%")
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -79,6 +174,71 @@ class SettingsPanel(QFrame):
         self.gpu_status_label.setObjectName("labelMuted")
         gpu_layout.addWidget(self.gpu_status_label, 1)
         layout.addLayout(gpu_layout)
+
+        # ---- Memory / VRAM monitor ----
+        # System RAM
+        ram_layout = QHBoxLayout()
+        ram_layout.setSpacing(8)
+        self.ram_icon = QLabel("🧠")
+        self.ram_icon.setStyleSheet("font-size: 14px; background: transparent;")
+        ram_layout.addWidget(self.ram_icon)
+        self.ram_label = QLabel("内存")
+        self.ram_label.setObjectName("labelMuted")
+        self.ram_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
+        ram_layout.addWidget(self.ram_label)
+        self.ram_bar = QProgressBar()
+        self.ram_bar.setRange(0, 100)
+        self.ram_bar.setValue(0)
+        self.ram_bar.setTextVisible(False)
+        self.ram_bar.setFixedHeight(8)
+        self.ram_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255,255,255,0.08);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #3b82f6;
+                border-radius: 4px;
+            }
+        """)
+        ram_layout.addWidget(self.ram_bar, 1)
+        self.ram_pct = QLabel("--%")
+        self.ram_pct.setObjectName("labelMuted")
+        self.ram_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
+        ram_layout.addWidget(self.ram_pct)
+        layout.addLayout(ram_layout)
+
+        # GPU VRAM
+        vram_layout = QHBoxLayout()
+        vram_layout.setSpacing(8)
+        self.vram_icon = QLabel("🎮")
+        self.vram_icon.setStyleSheet("font-size: 14px; background: transparent;")
+        vram_layout.addWidget(self.vram_icon)
+        self.vram_label = QLabel("显存")
+        self.vram_label.setObjectName("labelMuted")
+        self.vram_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
+        vram_layout.addWidget(self.vram_label)
+        self.vram_bar = QProgressBar()
+        self.vram_bar.setRange(0, 100)
+        self.vram_bar.setValue(0)
+        self.vram_bar.setTextVisible(False)
+        self.vram_bar.setFixedHeight(8)
+        self.vram_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255,255,255,0.08);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #a855f7;
+                border-radius: 4px;
+            }
+        """)
+        vram_layout.addWidget(self.vram_bar, 1)
+        self.vram_pct = QLabel("--%")
+        self.vram_pct.setObjectName("labelMuted")
+        self.vram_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
+        vram_layout.addWidget(self.vram_pct)
+        layout.addLayout(vram_layout)
 
         # Image threshold
         layout.addWidget(QLabel("图片相似度阈值"))

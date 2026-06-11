@@ -15,7 +15,7 @@
 ; =============================================================================
 
 #define AppName "PicSimProcess CPU"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.3"
 #define AppPublisher "PicSimProcess"
 #define AppURL ""
 #define AppExeName "PicSimProcess.exe"

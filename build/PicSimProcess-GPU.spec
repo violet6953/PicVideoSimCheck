@@ -9,6 +9,44 @@ project_root = os.environ.get('PROJECT_ROOT', os.getcwd())
 icon_path = os.path.join(project_root, 'build', 'icon.ico')
 has_icon = os.path.exists(icon_path)
 
+# ── Version info ──────────────────────────────────────────────────────────
+APP_VERSION = "1.0.3"
+APP_NAME = "PicSimProcess"
+APP_COMPANY = "PicSimProcess"
+APP_DESCRIPTION = "Image and Video Similarity Detection Tool (GPU Edition)"
+
+# Windows VERSIONINFO resource
+version_file = os.path.join(project_root, 'build', 'version_info.txt')
+with open(version_file, 'w', encoding='utf-8') as vf:
+    vf.write(f'''VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({APP_VERSION.replace(".", ",")},0),
+    prodvers=({APP_VERSION.replace(".", ",")},0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', '{APP_COMPANY}'),
+        StringStruct('FileDescription', '{APP_DESCRIPTION}'),
+        StringStruct('FileVersion', '{APP_VERSION}'),
+        StringStruct('InternalName', '{APP_NAME}'),
+        StringStruct('LegalCopyright', 'Copyright (C) 2024'),
+        StringStruct('OriginalFilename', '{APP_NAME}.exe'),
+        StringStruct('ProductName', '{APP_NAME}'),
+        StringStruct('ProductVersion', '{APP_VERSION}')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)''')
+
 # Collect PyTorch + torchvision
 torch_binaries, torch_datas, torch_hiddenimports = collect_all('torch')
 tv_binaries, tv_datas, tv_hiddenimports = collect_all('torchvision')
@@ -63,7 +101,7 @@ a = Analysis(
         'json', 're', 'threading', 'time', 'pathlib', 'os', 'io',
         'concurrent.futures', 'multiprocessing',
         'src.similarity', 'src.gpu_similarity', 'src.processor',
-        'src.video_similarity', 'src.utils',
+        'src.video_similarity', 'src.utils', 'src.memory_utils',
         'services.blocklist_service',
         'workers.scan_worker',
         'gui.main_window', 'gui.styles',
@@ -131,6 +169,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path if has_icon else None,
+    version=version_file if os.path.exists(version_file) else None,
 )
 
 coll = COLLECT(

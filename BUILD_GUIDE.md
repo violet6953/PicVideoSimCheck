@@ -133,8 +133,8 @@ build\build-all.bat
 ```
 
 输出文件：
-- `Output/PicSimProcess_CPU_Setup_v1.0.1.exe`
-- `Output/PicSimProcess_GPU_Setup_v1.0.1.exe`
+- `Output/PicSimProcess_CPU_Setup_v1.0.2.exe`
+- `Output/PicSimProcess_GPU_Setup_v1.0.2.exe`
 
 ### 安装包特性
 
@@ -152,15 +152,15 @@ build\build-all.bat
 
 ```
 发布/
-├── PicSimProcess_CPU_Setup_v1.0.1.exe   # 普通用户推荐
-├── PicSimProcess_GPU_Setup_v1.0.1.exe   # 有 NVIDIA 显卡的用户
+├── PicSimProcess_CPU_Setup_v1.0.2.exe   # 普通用户推荐
+├── PicSimProcess_GPU_Setup_v1.0.2.exe   # 有 NVIDIA 显卡的用户
 └── README.txt                           # 说明文件
 ```
 
 `README.txt` 示例内容：
 
 ```
-PicSimProcess 图片/视频相似度检测工具 v1.0.1
+PicSimProcess 图片/视频相似度检测工具 v1.0.2
 
 系统要求：
 - Windows 10/11 64 位
@@ -201,7 +201,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 - `build/installer-gpu.iss`
 
 ```pascal
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 ```
 
 ---

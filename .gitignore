@@ -28,5 +28,8 @@ Output/
 build/PicSimProcess-*/
 build/__pycache__/
 
+# Auto-generated build info
+src/build_info.py
+
 # Test outputs
 test_output.txt

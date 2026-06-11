@@ -1,144 +1,464 @@
 #!/usr/bin/env python3
-"""PicSimProcess GPU Build Script — PySide6 Desktop Edition."""
+"""PicSimProcess GPU Build Script — PySide6 Desktop Edition.
 
+Usage:
+    python build/build-gpu.py                    # 标准构建
+    python build/build-gpu.py --version 1.0.3    # 指定版本号
+    python build/build-gpu.py --installer        # 构建完成后自动打包安装程序
+    python build/build-gpu.py --no-clean         # 跳过清理步骤（增量构建）
+    python build/build-gpu.py --version 1.0.3 --installer --no-clean
+
+Features:
+    - 自动版本号同步到 installer.iss
+    - 自动检测 Inno Setup 安装路径
+    - 可选构建后自动打包为安装程序
+    - 构建信息注入（时间戳、Git Commit）
+    - 构建产物大小统计
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
-DIST_DIR = os.path.join(PROJECT_ROOT, 'dist-gpu')
-SPEC_FILE = os.path.join(BUILD_DIR, 'PicSimProcess-GPU.spec')
+# ── Paths ─────────────────────────────────────────────────────────────────
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BUILD_DIR = PROJECT_ROOT / "build"
+DIST_DIR = PROJECT_ROOT / "dist-gpu"
+SPEC_FILE = BUILD_DIR / "PicSimProcess-GPU.spec"
+INSTALLER_ISS = BUILD_DIR / "installer-gpu.iss"
+OUTPUT_DIR = PROJECT_ROOT / "Output"
+ICON_PATH = BUILD_DIR / "icon.ico"
+ENTRY_SCRIPT = PROJECT_ROOT / "desktop.py"
+
+# ── Inno Setup auto-detect paths ──────────────────────────────────────────
+
+INNO_SETUP_PATHS = [
+    r"C:\Program Files\Inno Setup 7\ISCC.exe",
+    r"C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
+    r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+]
 
 
-def clean():
-    """Remove ALL old build artifacts to prevent stale Flask/web UI cache."""
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def find_inno_setup() -> Path | None:
+    """Auto-detect Inno Setup compiler (ISCC.exe)."""
+    for p in INNO_SETUP_PATHS:
+        path = Path(p)
+        if path.exists():
+            return path
+
+    # Also try from PATH
+    try:
+        result = subprocess.run(
+            ["where", "ISCC"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            exe = Path(result.stdout.strip().splitlines()[0].strip())
+            if exe.exists():
+                return exe
+    except Exception:
+        pass
+
+    return None
+
+
+def get_git_info() -> dict[str, str]:
+    """Get Git commit hash and branch."""
+    info = {"commit": "unknown", "branch": "unknown", "dirty": "false"}
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        return info
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode == 0:
+            info["commit"] = result.stdout.strip()
+
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode == 0:
+            info["branch"] = result.stdout.strip()
+
+        result = subprocess.run(
+            ["git", "diff", "--quiet"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        info["dirty"] = "true" if result.returncode != 0 else "false"
+    except Exception:
+        pass
+
+    return info
+
+
+def get_version_from_iss() -> str | None:
+    """Extract version from installer-gpu.iss."""
+    if not INSTALLER_ISS.exists():
+        return None
+    content = INSTALLER_ISS.read_text(encoding="utf-8")
+    match = re.search(r'#define\s+AppVersion\s+"([\d.]+)"', content)
+    return match.group(1) if match else None
+
+
+def update_iss_version(version: str) -> bool:
+    """Update version number in installer-gpu.iss."""
+    if not INSTALLER_ISS.exists():
+        print(f"  Warning: {INSTALLER_ISS} not found, skipping version sync")
+        return False
+
+    content = INSTALLER_ISS.read_text(encoding="utf-8")
+    original = content
+
+    # Update AppVersion
+    content = re.sub(
+        r'(#define\s+AppVersion\s+")([\d.]+)(")',
+        rf'\g<1>{version}\g<3>',
+        content,
+    )
+
+    if content != original:
+        INSTALLER_ISS.write_text(content, encoding="utf-8")
+        print(f"  Updated {INSTALLER_ISS.name}: AppVersion = {version}")
+        return True
+
+    print(f"  {INSTALLER_ISS.name} already at version {version}")
+    return True
+
+
+def inject_build_info(version: str) -> Path:
+    """Generate a build_info.py with version, timestamp and git info.
+
+    This file is imported by the app at runtime to display build info.
+    """
+    git = get_git_info()
+    build_time = datetime.now(timezone.utc).isoformat()
+
+    info_content = f'''"""Auto-generated build information.
+
+DO NOT EDIT - generated by build-gpu.py
+"""
+
+VERSION = "{version}"
+BUILD_TIME = "{build_time}"
+GIT_COMMIT = "{git['commit']}"
+GIT_BRANCH = "{git['branch']}"
+GIT_DIRTY = {str(git['dirty']).lower() == 'true'}
+EDITION = "GPU"
+'''
+
+    build_info_path = PROJECT_ROOT / "src" / "build_info.py"
+    build_info_path.write_text(info_content, encoding="utf-8")
+    print(f"  Generated: {build_info_path.relative_to(PROJECT_ROOT)}")
+    return build_info_path
+
+
+def clean() -> None:
+    """Remove ALL old build artifacts."""
     dirs_to_remove = [
-        # PyInstaller build caches (old Flask/web entry may linger here)
-        os.path.join(BUILD_DIR, 'PicSimProcess-GPU'),
-        os.path.join(BUILD_DIR, 'buildPicSimProcess-GPU'),
-        # Distribution output
+        BUILD_DIR / "PicSimProcess-GPU",
+        BUILD_DIR / "buildPicSimProcess-GPU",
         DIST_DIR,
-        # PyInstaller workpath defaults inside project root
-        os.path.join(PROJECT_ROOT, '__pycache__'),
+        PROJECT_ROOT / "__pycache__",
     ]
 
     removed_any = False
     for d in dirs_to_remove:
-        if os.path.exists(d):
-            print(f"Removing: {d}")
+        if d.exists():
+            print(f"  Removing: {d.relative_to(PROJECT_ROOT)}")
             try:
                 shutil.rmtree(d, ignore_errors=True)
                 removed_any = True
             except Exception as e:
-                print(f"  Warning: could not fully remove {d}: {e}")
+                print(f"    Warning: could not fully remove: {e}")
 
-    # Also delete any stray .toc / .pyz files in build/ from old runs
-    for fname in os.listdir(BUILD_DIR):
-        fpath = os.path.join(BUILD_DIR, fname)
-        if os.path.isfile(fpath) and fname.endswith(('.toc', '.pyz', '.pkg', '.zip')):
-            print(f"Removing stray cache file: {fpath}")
+    # Stray cache files
+    for fpath in BUILD_DIR.iterdir():
+        if fpath.is_file() and fpath.suffix in {".toc", ".pyz", ".pkg", ".zip"}:
+            print(f"  Removing cache: {fpath.name}")
             try:
-                os.remove(fpath)
+                fpath.unlink()
                 removed_any = True
             except Exception as e:
-                print(f"  Warning: could not remove {fpath}: {e}")
+                print(f"    Warning: could not remove: {e}")
 
-    if removed_any:
-        print("Clean complete.")
-    else:
-        print("Nothing to clean.")
+    print("  Clean complete." if removed_any else "  Nothing to clean.")
 
 
-def build():
-    # Verify entry script exists and is the PySide6 desktop version
-    entry_script = os.path.join(PROJECT_ROOT, 'desktop.py')
-    if not os.path.exists(entry_script):
-        print(f"\n[FAIL] Entry script not found: {entry_script}")
+def verify_entry() -> None:
+    """Sanity check: ensure desktop.py exists and is PySide6."""
+    if not ENTRY_SCRIPT.exists():
+        print(f"\n[FAIL] Entry script not found: {ENTRY_SCRIPT}")
         sys.exit(1)
 
-    # Quick sanity check: ensure desktop.py imports PySide6, not Flask
-    with open(entry_script, 'r', encoding='utf-8') as f:
-        content = f.read()
-    if 'PySide6' not in content:
+    content = ENTRY_SCRIPT.read_text(encoding="utf-8")
+    if "PySide6" not in content:
         print("\n[FAIL] desktop.py does not appear to be the PySide6 desktop entry!")
         sys.exit(1)
 
+    print(f"  Entry script verified: {ENTRY_SCRIPT.name}")
+
+
+def run_pyinstaller() -> bool:
+    """Run PyInstaller with the GPU spec."""
     cmd = [
-        sys.executable, '-m', 'PyInstaller',
-        SPEC_FILE,
-        '--clean',
-        '--noconfirm',
-        '--distpath', DIST_DIR,
+        sys.executable, "-m", "PyInstaller",
+        str(SPEC_FILE),
+        "--clean",
+        "--noconfirm",
+        "--distpath", str(DIST_DIR),
     ]
 
-    print(f"Running: {' '.join(cmd)}")
+    print(f"\n  Command: {' '.join(cmd)}")
+    print("-" * 60)
+
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    return result.returncode == 0
+
+
+def verify_build() -> bool:
+    """Verify the built executable and check for stale references."""
+    exe_dir = DIST_DIR / "PicSimProcess"
+    exe_path = exe_dir / "PicSimProcess.exe"
+
+    if not exe_path.exists():
+        print(f"\n[FAIL] Executable not found: {exe_path}")
+        return False
+
+    # Size calculation
+    total_size = sum(
+        f.stat().st_size
+        for f in exe_dir.rglob("*")
+        if f.is_file()
+    )
+    size_gb = total_size / (1024 ** 3)
+
+    print(f"\n  Output directory: {exe_dir}")
+    print(f"  Main executable:  {exe_path}")
+    print(f"  Total size:       {size_gb:.2f} GB")
+
+    # Verify entry point in analysis
+    analysis_file = BUILD_DIR / "PicSimProcess-GPU" / "Analysis-00.toc"
+    if analysis_file.exists():
+        first_line = analysis_file.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        if "app.py" in first_line:
+            print("\n[ERROR] Build still references old app.py (Flask)!")
+            print("         Delete build/PicSimProcess-GPU and rebuild.")
+            return False
+        elif "desktop.py" in first_line:
+            print("  Entry script:     desktop.py (verified)")
+
+    return True
+
+
+def build_installer(version: str) -> bool:
+    """Compile Inno Setup installer from the built output."""
+    iscc = find_inno_setup()
+    if not iscc:
+        print("\n[FAIL] Inno Setup not found.")
+        print("  Searched:")
+        for p in INNO_SETUP_PATHS:
+            print(f"    {p}")
+        print("\n  Install from: https://jrsoftware.org/isdl.php")
+        return False
+
+    print(f"\n  Inno Setup: {iscc}")
+    print(f"  Compiling installer for v{version}...")
+
+    cmd = [str(iscc), str(INSTALLER_ISS)]
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+
+    if result.returncode != 0:
+        print("\n[FAIL] Installer compilation failed!")
+        return False
+
+    # Check output
+    installer_name = f"PicSimProcess_GPU_Setup_v{version}.exe"
+    installer_path = OUTPUT_DIR / installer_name
+    if installer_path.exists():
+        size_mb = installer_path.stat().st_size / (1024 ** 2)
+        print(f"\n  Installer: {installer_path}")
+        print(f"  Size:      {size_mb:.1f} MB")
+    else:
+        print(f"\n[WARNING] Expected installer not found: {installer_path}")
+
+    return True
+
+
+def print_summary(version: str, with_installer: bool, duration_sec: float) -> None:
+    """Print final build summary."""
+    git = get_git_info()
+
+    print("\n" + "=" * 60)
+    print(f"  Build Summary")
+    print("=" * 60)
+    print(f"  Version:     {version}")
+    print(f"  Edition:     GPU")
+    print(f"  Duration:    {duration_sec / 60:.1f} min")
+    print(f"  Git commit:  {git['commit']}")
+    print(f"  Git branch:  {git['branch']}")
+    print(f"  Git dirty:   {git['dirty']}")
+
+    exe_dir = DIST_DIR / "PicSimProcess"
+    if exe_dir.exists():
+        total_size = sum(f.stat().st_size for f in exe_dir.rglob("*") if f.is_file())
+        print(f"  Size:        {total_size / (1024**3):.2f} GB")
+
+    if with_installer:
+        installer_name = f"PicSimProcess_GPU_Setup_v{version}.exe"
+        installer_path = OUTPUT_DIR / installer_name
+        if installer_path.exists():
+            print(f"  Installer:   {installer_path}")
+
+    print("=" * 60)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build PicSimProcess GPU Edition with PyInstaller",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python build/build-gpu.py                    # Standard build
+  python build/build-gpu.py -v 1.0.3           # Build with version 1.0.3
+  python build/build-gpu.py -v 1.0.3 -i        # Build + create installer
+  python build/build-gpu.py --no-clean         # Skip clean (faster)
+  python build/build-gpu.py -v 1.0.3 -i -n     # Versioned, installer, no clean
+        """.strip(),
+    )
+    parser.add_argument(
+        "-v", "--version",
+        default=None,
+        help="Version number (e.g., 1.0.3). Auto-detected from installer.iss if omitted.",
+    )
+    parser.add_argument(
+        "-i", "--installer",
+        action="store_true",
+        help="Build installer with Inno Setup after PyInstaller completes",
+    )
+    parser.add_argument(
+        "-n", "--no-clean",
+        action="store_true",
+        help="Skip clean step (incremental build, faster but may be stale)",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    # ── Resolve version ──
+    version = args.version
+    if version is None:
+        version = get_version_from_iss()
+    if version is None:
+        version = "1.0.3"
+        print(f"  Version not specified, using default: {version}")
+    else:
+        print(f"  Version: {version}")
+
+    # ── Header ──
+    print("=" * 60)
+    print("  PicSimProcess GPU Build (PySide6 Desktop)")
+    print(f"  Version: {version}")
+    print("=" * 60)
+
+    # ── Check PyInstaller ──
+    try:
+        import PyInstaller
+        print(f"  PyInstaller: {PyInstaller.__version__}")
+    except ImportError:
+        print("\n[FAIL] PyInstaller not found. Installing...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"])
+        try:
+            import PyInstaller
+        except ImportError:
+            print("[FAIL] PyInstaller installation failed!")
+            return 1
+
+    start_time = datetime.now()
+
+    # ── Clean ──
+    if not args.no_clean:
+        print("\n[1/4] Cleaning old build artifacts...")
+        clean()
+    else:
+        print("\n[1/4] Skipping clean (--no-clean)")
+
+    # ── Sync version ──
+    print("\n[2/4] Syncing version info...")
+    update_iss_version(version)
+    inject_build_info(version)
+
+    # ── Verify entry ──
+    print("\n[3/4] Verifying entry script...")
+    verify_entry()
+
+    # ── Build ──
+    print("\n[4/4] Running PyInstaller...")
     print("-" * 60)
     print("[INFO] Entry: desktop.py (PySide6 native GUI)")
     print("[WARN] This will take 10-30 minutes due to PyTorch/CUDA size")
     print("-" * 60)
 
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    if not run_pyinstaller():
+        print("\n[FAIL] PyInstaller build failed!")
+        return 1
 
-    if result.returncode != 0:
-        print("\n[FAIL] Build failed!")
-        sys.exit(1)
+    if not verify_build():
+        return 1
 
-    print("\n[OK] Build successful!")
+    print("\n[OK] PyInstaller build successful!")
 
-    exe_dir = os.path.join(DIST_DIR, 'PicSimProcess')
-    exe_path = os.path.join(exe_dir, 'PicSimProcess.exe')
+    # ── Installer ──
+    if args.installer:
+        print("\n[5/5] Building installer...")
+        if not build_installer(version):
+            return 1
+        print("\n[OK] Installer created successfully!")
 
-    if os.path.exists(exe_path):
-        total_size = 0
-        for dirpath, dirnames, filenames in os.walk(exe_dir):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                total_size += os.path.getsize(fp)
+    # ── Summary ──
+    duration = (datetime.now() - start_time).total_seconds()
+    print_summary(version, args.installer, duration)
 
-        size_gb = total_size / (1024 ** 3)
-        print(f"   Output directory: {exe_dir}")
-        print(f"   Main executable:  {exe_path}")
-        print(f"   Total size:       {size_gb:.2f} GB")
+    if not args.installer:
+        print("\n  Next step: compile installer with Inno Setup")
+        iscc = find_inno_setup()
+        if iscc:
+            print(f'  {iscc} {INSTALLER_ISS.name}')
+        else:
+            print('  "C:\\Program Files\\Inno Setup 7\\ISCC.exe" build\\installer-gpu.iss')
 
-        # Verify the built exe is NOT using the old app.py entry
-        build_analysis = os.path.join(BUILD_DIR, 'PicSimProcess-GPU', 'Analysis-00.toc')
-        if os.path.exists(build_analysis):
-            with open(build_analysis, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-            if 'app.py' in first_line:
-                print("\n[ERROR] Build still references old app.py (Flask)!")
-                print("         Run this script again or manually delete build/PicSimProcess-GPU")
-                sys.exit(1)
-            elif 'desktop.py' in first_line:
-                print("   Entry script:     desktop.py (verified)")
-
-    return exe_dir
+    return 0
 
 
-def main():
-    print("=" * 60)
-    print("  PicSimProcess GPU Build (PySide6 Desktop)")
-    print("=" * 60)
-
-    try:
-        import PyInstaller
-        print(f"   PyInstaller: {PyInstaller.__version__}")
-    except ImportError:
-        print("\n[FAIL] PyInstaller not found. Installing...")
-        subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyinstaller'])
-
-    clean()
-    build()
-
-    print("\n" + "=" * 60)
-    print("  Build complete!")
-    print("  Next step: compile installer with Inno Setup")
-    print('  "C:\\Program Files\\Inno Setup 7\\ISCC.exe" build\\installer-gpu.iss')
-    print("=" * 60)
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

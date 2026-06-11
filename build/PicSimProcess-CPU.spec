@@ -50,7 +50,7 @@ a = Analysis(
         'json', 're', 'threading', 'time', 'pathlib', 'os', 'io',
         'concurrent.futures', 'multiprocessing',
         'src.similarity', 'src.gpu_similarity', 'src.processor',
-        'src.video_similarity', 'src.utils',
+        'src.video_similarity', 'src.utils', 'src.memory_utils',
         'services.blocklist_service',
         'workers.scan_worker',
         'gui.main_window', 'gui.styles',
