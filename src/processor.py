@@ -23,13 +23,23 @@ class CancelledError(Exception):
     pass
 
 
+# Process-pool worker state: one ImageSimilarity instance per process
+_worker_sim: ImageSimilarity | None = None
+
+
+def _init_worker(method: str, threshold: float) -> None:
+    """Initialize worker process with a reusable ImageSimilarity instance."""
+    global _worker_sim
+    _worker_sim = ImageSimilarity(method=method, threshold=threshold)
+
+
 def _compare_pair(args: tuple) -> tuple[Path, Path, float] | None:
     """Worker function for parallel comparison (must be top-level for pickling)."""
-    f1, f2, method = args
+    global _worker_sim
+    f1, f2 = args
     try:
-        sim = ImageSimilarity(method=method)
-        score = sim.compare(f1, f2, method=method)
-        return (f1, f2, score) if score >= sim.threshold else None
+        score = _worker_sim.compare(f1, f2)
+        return (f1, f2, score) if score >= _worker_sim.threshold else None
     except Exception:
         return None
 
@@ -84,17 +94,25 @@ class BatchProcessor:
         active_method = method or self.similarity.method
         use_multiprocess = active_method in ("ssim", "orb")
 
+        # Set worker instance for the current process (used by ThreadPoolExecutor)
+        global _worker_sim
+        _worker_sim = self.similarity
+
         # Build all comparison pairs
         pairs = []
         for i in range(len(files)):
             for j in range(i + 1, len(files)):
-                pairs.append((files[i], files[j], active_method))
+                pairs.append((files[i], files[j]))
 
         duplicates: list[tuple[Path, Path, float]] = []
 
         if use_multiprocess:
             # CPU-heavy methods: use ProcessPoolExecutor to bypass GIL
-            with ProcessPoolExecutor(max_workers=_CPU_COUNT) as executor:
+            with ProcessPoolExecutor(
+                max_workers=_CPU_COUNT,
+                initializer=_init_worker,
+                initargs=(active_method, self.threshold),
+            ) as executor:
                 futures = {executor.submit(_compare_pair, p): p for p in pairs}
                 iterable = as_completed(futures)
                 if self.progress:

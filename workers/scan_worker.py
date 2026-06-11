@@ -69,10 +69,11 @@ class ScanWorker(QThread):
                     videos = list_video_files(folder, recursive=True)
                     all_video_files.extend([f for f in videos if f.is_file()])
 
+            # Use normcase+abspath instead of resolve() to avoid expensive symlink resolution
             seen_images: set[str] = set()
             unique_images: list[Path] = []
             for f in all_image_files:
-                resolved = str(f.resolve())
+                resolved = os.path.normcase(os.path.abspath(str(f)))
                 if resolved not in seen_images:
                     seen_images.add(resolved)
                     unique_images.append(f)
@@ -80,7 +81,7 @@ class ScanWorker(QThread):
             seen_videos: set[str] = set()
             unique_videos: list[Path] = []
             for f in all_video_files:
-                resolved = str(f.resolve())
+                resolved = os.path.normcase(os.path.abspath(str(f)))
                 if resolved not in seen_videos:
                     seen_videos.add(resolved)
                     unique_videos.append(f)
@@ -177,10 +178,9 @@ class ScanWorker(QThread):
                                     image_duplicates.append((image_files[i], image_files[j], float(score)))
 
                         del sim
-                        if gpu_sim.using_cuda:
-                            torch.cuda.empty_cache()
 
                     del feats_t
+                    # Single cleanup after all similarity computation
                     if gpu_sim.using_cuda:
                         torch.cuda.empty_cache()
 
@@ -202,6 +202,24 @@ class ScanWorker(QThread):
                         message=f"正在比较图片... 0/{total_images}",
                     )
 
+                    # 哈希方法：预计算所有特征，避免每张图片被反复加载 O(n) 次
+                    use_precomputed = self.method in ("phash", "dhash", "ahash", "whash")
+                    precomputed_hashes = None
+                    if use_precomputed:
+                        self._emit_progress(
+                            stage="图片特征提取",
+                            current=0,
+                            total=total_images,
+                            message=f"正在预计算 {self.method} 特征... 0/{total_images}",
+                        )
+                        precomputed_hashes = processor.similarity.precompute_hashes(image_files)
+                        self._emit_progress(
+                            stage="图片相似度计算",
+                            current=0,
+                            total=total_images,
+                            message=f"正在比较图片... 0/{total_images} 张（预计算完成，共 {total_pairs} 对）",
+                        )
+
                     for i in range(total_images):
                         if self.cancel_event.is_set():
                             raise CancelledError()
@@ -217,7 +235,13 @@ class ScanWorker(QThread):
                         for j in range(i + 1, total_images):
                             checked_pairs += 1
                             try:
-                                score = processor.similarity.compare(image_files[i], image_files[j])
+                                if use_precomputed and precomputed_hashes is not None:
+                                    score = processor.similarity.compare_hashes(
+                                        precomputed_hashes.get(str(image_files[i])),
+                                        precomputed_hashes.get(str(image_files[j])),
+                                    )
+                                else:
+                                    score = processor.similarity.compare(image_files[i], image_files[j])
                             except Exception:
                                 continue
                             if score >= self.threshold:

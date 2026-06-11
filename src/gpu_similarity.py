@@ -138,9 +138,10 @@ class GPUSimilarity:
                         self._feature_cache[p] = zero_feat
                         features.append(zero_feat)
 
-                # Free GPU memory between batches
-                if self.using_cuda:
-                    torch.cuda.empty_cache()
+        # Free cached GPU memory once after all batches (PyTorch allocator
+        # reuses cached allocations; per-batch empty_cache stalls the pipeline)
+        if self.using_cuda:
+            torch.cuda.empty_cache()
 
         return np.stack(features, axis=0)
 
@@ -220,21 +221,30 @@ class GPUSimilarity:
             sim = torch.matmul(batch_feats, feats_t.T)
             sim = (sim + 1.0) / 2.0
 
-            for bi in range(batch_end - batch_start):
-                i = batch_start + bi
-                row = sim[bi, i + 1:]
-                mask = row >= threshold
-                if mask.any():
-                    js = (torch.where(mask)[0] + i + 1).cpu().numpy()
-                    scores = sim[bi, js].cpu().numpy()
-                    for j, score in zip(js, scores):
-                        duplicates.append((Path(image_paths[i]), Path(image_paths[j]), float(score)))
+            # Vectorized extraction: find all (i,j) where sim >= threshold and j > i
+            B = batch_end - batch_start
+            row_idx = torch.arange(B, device=sim.device).unsqueeze(1)     # (B, 1)
+            col_idx = torch.arange(n, device=sim.device).unsqueeze(0)     # (1, N)
+            global_row = batch_start + row_idx                             # (B, 1)
+
+            triu_mask = col_idx > global_row                               # j > i
+            thr_mask = sim >= threshold
+            valid_mask = triu_mask & thr_mask
+
+            if valid_mask.any():
+                rows, cols = torch.where(valid_mask)
+                global_rows = rows + batch_start
+                scores = sim[rows, cols].cpu().numpy()
+                batch_dups = [
+                    (Path(image_paths[global_rows[k].item()]), Path(image_paths[cols[k].item()]), float(scores[k]))
+                    for k in range(len(scores))
+                ]
+                duplicates.extend(batch_dups)
 
             del sim
-            if self.using_cuda:
-                torch.cuda.empty_cache()
 
         del feats_t
+        # Single cleanup after all similarity computation is done
         if self.using_cuda:
             torch.cuda.empty_cache()
 

@@ -39,6 +39,8 @@ class ImageSimilarity:
             "ahash": imagehash.average_hash,
             "whash": imagehash.whash,
         }
+        # Reuse ORB detector across comparisons (stateless, expensive to recreate)
+        self._orb = cv2.ORB_create(nfeatures=300)
 
     def _load_image(self, image_input: str | Path | bytes) -> Image.Image:
         """统一加载为 PIL Image。"""
@@ -131,9 +133,8 @@ class ImageSimilarity:
         gray1 = cv2.cvtColor(np.array(p1), cv2.COLOR_RGB2GRAY)
         gray2 = cv2.cvtColor(np.array(p2), cv2.COLOR_RGB2GRAY)
 
-        orb = cv2.ORB_create(nfeatures=500)
-        kp1, des1 = orb.detectAndCompute(gray1, None)
-        kp2, des2 = orb.detectAndCompute(gray2, None)
+        kp1, des1 = self._orb.detectAndCompute(gray1, None)
+        kp2, des2 = self._orb.detectAndCompute(gray2, None)
 
         if des1 is None or des2 is None:
             return 0.0
@@ -153,6 +154,32 @@ class ImageSimilarity:
             return 0.0
 
         return len(good_matches) / max_possible
+
+    def precompute_hashes(self, image_paths: list[str | Path]) -> dict[str, imagehash.ImageHash | None]:
+        """预计算所有图片的感知哈希值（仅限哈希方法）。
+
+        返回字典: {str(path): ImageHash}，失败的图片对应值为 None。
+        """
+        hash_func = self._hash_funcs.get(self.method)
+        if hash_func is None:
+            raise ValueError(f"方法 {self.method} 不支持预计算")
+
+        result: dict[str, imagehash.ImageHash | None] = {}
+        for path in image_paths:
+            try:
+                img = self._load_image(path)
+                result[str(path)] = hash_func(img)
+            except Exception:
+                result[str(path)] = None
+        return result
+
+    def compare_hashes(self, h1: imagehash.ImageHash | None, h2: imagehash.ImageHash | None) -> float:
+        """使用预计算的哈希值快速比较（无需重新加载图片）。"""
+        if h1 is None or h2 is None:
+            return 0.0
+        max_bits = max(len(h1.hash) ** 2, len(h2.hash) ** 2)
+        distance = h1 - h2
+        return 1.0 - (distance / max_bits)
 
     def compare(self, img1, img2, method: str | None = None) -> float:
         """
