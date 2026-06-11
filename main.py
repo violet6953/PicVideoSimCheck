@@ -7,6 +7,11 @@ import argparse
 import sys
 from pathlib import Path
 
+from src.utils import configure_cpu_limits
+
+# Cap BLAS/OpenMP threads before importing numpy/cv2/torch/scikit-image.
+configure_cpu_limits()
+
 from src.processor import BatchProcessor
 from src.similarity import ImageSimilarity
 from src.utils import format_similarity, list_video_files

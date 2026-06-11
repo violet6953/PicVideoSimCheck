@@ -12,10 +12,10 @@ from typing import Callable
 from tqdm import tqdm
 
 from .similarity import ImageSimilarity
-from .utils import list_image_files
+from .utils import get_worker_cpu_count, list_image_files
 
-# Dynamically detect CPU thread count
-_CPU_COUNT = os.cpu_count() or 20
+# Cap worker threads at 90% of CPU cores to keep the system responsive
+_CPU_COUNT = get_worker_cpu_count()
 
 
 class CancelledError(Exception):

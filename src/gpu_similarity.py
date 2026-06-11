@@ -13,8 +13,10 @@ import torchvision.transforms as T
 from PIL import Image
 from torchvision import models
 
-# Dynamically detect CPU thread count (e.g. 10-core 20-thread -> 20)
-_CPU_COUNT = os.cpu_count() or 20
+from .utils import get_worker_cpu_count
+
+# Cap worker threads at 90% of CPU cores to keep the system responsive
+_CPU_COUNT = get_worker_cpu_count()
 
 
 class GPUSimilarity:

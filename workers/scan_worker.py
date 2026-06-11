@@ -19,6 +19,7 @@ from src.utils import (
     format_file_size,
     get_image_info,
     get_video_info,
+    get_worker_cpu_count,
     list_image_files,
     list_video_files,
 )
@@ -264,11 +265,19 @@ class ScanWorker(QThread):
                 )
 
                 def video_progress(current: int, total: int) -> bool:
+                    n = total // 3
+                    if current < n:
+                        message = f"正在提取视频关键帧... {current}/{n} 个视频"
+                    elif current < 2 * n:
+                        message = f"正在提取视频特征... {current - n}/{n} 个视频"
+                    else:
+                        message = f"正在比较视频相似度... {current - 2 * n}/{n}"
+
                     self._emit_progress(
                         stage="视频相似度检测",
                         current=current,
                         total=total,
-                        message=f"正在处理视频... {current}/{total}",
+                        message=message,
                     )
                     return self.cancel_event.is_set()
 
@@ -353,7 +362,7 @@ class ScanWorker(QThread):
 
             # ===== 收集结果 =====
             result_groups = []
-            cpu_count = os.cpu_count() or 20
+            cpu_count = get_worker_cpu_count()
 
             def _collect_image_info(img_path: str) -> dict:
                 w, h, size = get_image_info(img_path)

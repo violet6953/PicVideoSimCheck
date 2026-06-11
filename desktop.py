@@ -5,6 +5,11 @@ from __future__ import annotations
 
 import sys
 
+from src.utils import configure_cpu_limits
+
+# Cap BLAS/OpenMP threads before any numeric libraries are imported.
+configure_cpu_limits()
+
 from PySide6.QtWidgets import QApplication
 
 from gui.main_window import MainWindow

@@ -21,9 +21,17 @@ from .memory_utils import (
     get_gpu_memory_limit,
     get_video_processing_memory_limit,
 )
-from .utils import get_video_info
+from .utils import configure_cpu_limits, get_video_info, get_worker_cpu_count
 
-_CPU_COUNT = os.cpu_count() or 20
+configure_cpu_limits()  # Must run before importing cv2/torch below
+
+import cv2
+import numpy as np
+import torch
+import torchvision.transforms as T
+from PIL import Image
+
+_CPU_COUNT = get_worker_cpu_count()
 logger = logging.getLogger(__name__)
 
 

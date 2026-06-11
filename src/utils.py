@@ -8,6 +8,39 @@ from pathlib import Path
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp", ".heic"}
 _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".m2ts", ".3gp", ".ogv"}
 
+# Default CPU usage cap to leave headroom for other applications.
+_CPU_USAGE_RATIO = 0.90
+
+
+def configure_cpu_limits(ratio: float = _CPU_USAGE_RATIO) -> int:
+    """Configure environment variables to cap CPU usage of numeric libraries.
+
+    Must be called *before* importing numpy, cv2, torch, scikit-image, etc.
+    for the limits to take effect.
+
+    Returns:
+        Number of worker threads/cores to use.
+    """
+    total = os.cpu_count() or 1
+    limited = max(1, int(total * ratio))
+
+    os.environ.setdefault("OMP_NUM_THREADS", str(limited))
+    os.environ.setdefault("MKL_NUM_THREADS", str(limited))
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", str(limited))
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", str(limited))
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS", str(limited))
+
+    return limited
+
+
+def get_worker_cpu_count(ratio: float = _CPU_USAGE_RATIO) -> int:
+    """Return the number of CPU workers appropriate for background tasks.
+
+    Defaults to 90% of available cores so the OS and other apps remain
+    responsive while scanning.
+    """
+    return max(1, int((os.cpu_count() or 1) * ratio))
+
 
 def _scandir_list(directory: str | Path, exts: set[str], recursive: bool) -> list[Path]:
     """Fast directory listing using os.scandir / os.walk.

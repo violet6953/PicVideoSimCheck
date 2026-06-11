@@ -7,16 +7,17 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from .utils import configure_cpu_limits, get_worker_cpu_count
+
+# Configure CPU limits *before* importing numeric libraries so OpenBLAS/MKL
+# respect the thread caps.
+configure_cpu_limits()
+
 import cv2
 import imagehash
 import numpy as np
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
-
-# Match numpy/BLAS thread count to CPU threads for parallel linear algebra
-os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 20))
-os.environ.setdefault("MKL_NUM_THREADS", str(os.cpu_count() or 20))
-os.environ.setdefault("OPENBLAS_NUM_THREADS", str(os.cpu_count() or 20))
 
 
 class ImageSimilarity:
