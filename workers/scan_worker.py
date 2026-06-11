@@ -374,10 +374,15 @@ class ScanWorker(QThread):
                         filtered.append(g)
                 return filtered
 
+            image_groups_pre_filter = image_groups
             image_groups = filter_groups(image_groups)
-            video_groups = filter_groups(video_groups)
+            blocked_image_groups = len(image_groups_pre_filter) - len(image_groups)
 
-            blocked_count = (len(image_groups_dict) - len(image_groups)) + (len(video_groups_dict) - len(video_groups))
+            video_groups_pre_filter = video_groups
+            video_groups = filter_groups(video_groups)
+            blocked_video_groups = len(video_groups_pre_filter) - len(video_groups)
+
+            blocked_count = blocked_image_groups + blocked_video_groups
 
             # ===== 收集结果 =====
             result_groups = []
