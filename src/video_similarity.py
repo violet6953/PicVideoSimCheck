@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -131,10 +131,13 @@ class VideoSimilarity:
         self,
         video_paths: list[str | Path],
         indices: list[int],
+        progress_callback: Callable[[int, int], bool] | None = None,
     ) -> list[list[np.ndarray]]:
         """Extract keyframes from multiple videos in parallel using the class pool.
 
         Reuses self._load_pool to avoid ThreadPoolExecutor creation overhead.
+        If progress_callback is provided, it is invoked for every completed
+        video with (completed_count, total_in_batch).
         Returns a list aligned with *indices* (same order).
         """
         def _worker(idx: int) -> list[np.ndarray]:
@@ -143,14 +146,20 @@ class VideoSimilarity:
             except Exception:
                 return []
 
+        total = len(indices)
         futures = {self._load_pool.submit(_worker, idx): i for i, idx in enumerate(indices)}
         results: list[list[np.ndarray]] = [[] for _ in indices]
-        for future in futures:
+        completed = 0
+        for future in as_completed(futures):
             pos = futures[future]
             try:
                 results[pos] = future.result()
             except Exception:
                 results[pos] = []
+            completed += 1
+            if progress_callback and progress_callback(completed, total):
+                # Cancellation is handled at the batch level; just stop reporting.
+                pass
         return results
 
     def _flatten_frames(
@@ -342,12 +351,22 @@ class VideoSimilarity:
                 sizer.pre_batch()
 
             # ---- Parallel keyframe extraction ----
-            batch_frames_list = self._extract_keyframes_parallel(video_paths, batch_indices)
+            def _keyframe_progress(completed_in_batch: int, batch_total: int) -> bool:
+                if progress_callback:
+                    global_current = batch_start + completed_in_batch
+                    return progress_callback(global_current, total_progress_units)
+                return False
+
+            batch_frames_list = self._extract_keyframes_parallel(
+                video_paths,
+                batch_indices,
+                progress_callback=_keyframe_progress,
+            )
             for pos, idx in enumerate(batch_indices):
                 if not batch_frames_list[pos]:
                     empty_videos.add(idx)
 
-            # Report Phase 1 progress (keyframe extraction: 0 ~ n)
+            # Final Phase 1 progress report for this batch (keyframe extraction: 0 ~ n)
             if progress_callback:
                 progress_current = batch_end
                 if progress_callback(progress_current, total_progress_units):

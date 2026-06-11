@@ -267,11 +267,11 @@ class ScanWorker(QThread):
                 def video_progress(current: int, total: int) -> bool:
                     n = total // 3
                     if current < n:
-                        message = f"正在提取视频关键帧... {current}/{n} 个视频"
+                        message = f"正在提取第 {current} 个视频的关键帧（共 {n} 个视频）"
                     elif current < 2 * n:
-                        message = f"正在提取视频特征... {current - n}/{n} 个视频"
+                        message = f"正在提取第 {current - n} 个视频的特征（共 {n} 个视频）"
                     else:
-                        message = f"正在比较视频相似度... {current - 2 * n}/{n}"
+                        message = f"正在比较第 {current - 2 * n} 对视频的相似度（共 {n} 对）"
 
                     self._emit_progress(
                         stage="视频相似度检测",
