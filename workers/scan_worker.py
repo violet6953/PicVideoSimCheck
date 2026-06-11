@@ -276,9 +276,11 @@ class ScanWorker(QThread):
                         detail_total = frames_total
                         message = f"正在提取第 {current} 个视频的关键帧（共 {n} 个视频）"
                     elif current < 2 * n:
-                        # Feature phase: stats show video count
-                        detail_current = current - n
-                        detail_total = n
+                        # Feature phase: stats show actual frame count being processed
+                        frames_completed = metadata.get("frames_completed", current - n) if metadata else current - n
+                        frames_total = metadata.get("frames_total", n) if metadata else n
+                        detail_current = frames_completed
+                        detail_total = frames_total
                         message = f"正在提取第 {current - n} 个视频的特征（共 {n} 个视频）"
                     else:
                         # Compare phase: stats show pair count

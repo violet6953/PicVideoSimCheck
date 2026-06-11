@@ -203,11 +203,13 @@ class VideoSimilarity:
                 return None
 
         with torch.no_grad():
-            for batch_start in range(0, total, batch_size):
-                if progress_callback and progress_callback(batch_start, total):
-                    raise CancelledError()
+            for batch_start_frame in range(0, total, batch_size):
+                if progress_callback:
+                    metadata = {"phase": "frame_features", "frames_completed": batch_start_frame}
+                    if progress_callback(batch_start_frame, total, metadata):
+                        raise CancelledError()
 
-                batch_frames = frames[batch_start : batch_start + batch_size]
+                batch_frames = frames[batch_start_frame : batch_start_frame + batch_size]
                 futures = {
                     self._load_pool.submit(_preprocess, f): idx
                     for idx, f in enumerate(batch_frames)
@@ -400,10 +402,30 @@ class VideoSimilarity:
             # ---- Feature extraction ----
             flat_frames, mapping = self._flatten_frames(batch_frames_list)
             if flat_frames:
+                frame_total = len(flat_frames)
+
+                def _frame_feature_progress(
+                    frame_current: int, frame_total: int, metadata: dict | None = None
+                ) -> bool:
+                    if not progress_callback:
+                        return False
+                    # Map frame progress within this batch to Phase 2 video progress
+                    fraction = frame_current / frame_total if frame_total > 0 else 0
+                    videos_processed = batch_start + fraction * (batch_end - batch_start)
+                    global_current = int(n + videos_processed)
+                    extra = {
+                        "phase": "features",
+                        "frames_completed": frame_current,
+                        "frames_total": frame_total,
+                        "videos_completed": int(videos_processed),
+                        "videos_total": n,
+                    }
+                    return progress_callback(global_current, total_progress_units, extra)
+
                 features = self._extract_frame_features(
                     flat_frames,
                     batch_size=inference_batch_size,
-                    progress_callback=None,
+                    progress_callback=_frame_feature_progress,
                 )
                 for feat, (vi_in_batch, _) in zip(features, mapping):
                     actual_idx = batch_indices[vi_in_batch]
@@ -411,11 +433,13 @@ class VideoSimilarity:
                         video_features[actual_idx] = []
                     video_features[actual_idx].append(feat)
 
-                # Report Phase 2 progress (feature extraction: n ~ 2n)
+                # Final Phase 2 progress report for this batch
                 if progress_callback:
                     progress_current = n + batch_end
                     extra = {
                         "phase": "features",
+                        "frames_completed": frame_total,
+                        "frames_total": frame_total,
                         "videos_completed": batch_end,
                         "videos_total": n,
                     }
