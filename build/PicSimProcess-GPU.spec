@@ -10,7 +10,7 @@ icon_path = os.path.join(project_root, 'build', 'icon.ico')
 has_icon = os.path.exists(icon_path)
 
 # ── Version info ──────────────────────────────────────────────────────────
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_NAME = "PicSimProcess"
 APP_COMPANY = "PicSimProcess"
 APP_DESCRIPTION = "Image and Video Similarity Detection Tool (GPU Edition)"

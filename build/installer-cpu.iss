@@ -15,7 +15,7 @@
 ; =============================================================================
 
 #define AppName "PicSimProcess CPU"
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.4"
 #define AppPublisher "PicSimProcess"
 #define AppURL ""
 #define AppExeName "PicSimProcess.exe"
@@ -39,8 +39,9 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=commandline dialog
+DisableDirPage=no
 
 ; Prevent running the app during installation
 AppMutex=PicSimProcess_Mutex

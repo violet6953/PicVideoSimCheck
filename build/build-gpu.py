@@ -152,6 +152,30 @@ def update_iss_version(version: str) -> bool:
     return True
 
 
+def update_spec_version(version: str) -> bool:
+    """Update APP_VERSION in PyInstaller spec file."""
+    if not SPEC_FILE.exists():
+        print(f"  Warning: {SPEC_FILE} not found, skipping version sync")
+        return False
+
+    content = SPEC_FILE.read_text(encoding="utf-8")
+    original = content
+
+    content = re.sub(
+        r'(APP_VERSION\s*=\s*")([\d.]+)(")',
+        rf'\g<1>{version}\g<3>',
+        content,
+    )
+
+    if content != original:
+        SPEC_FILE.write_text(content, encoding="utf-8")
+        print(f"  Updated {SPEC_FILE.name}: APP_VERSION = {version}")
+        return True
+
+    print(f"  {SPEC_FILE.name} already at version {version}")
+    return True
+
+
 def inject_build_info(version: str) -> Path:
     """Generate a build_info.py with version, timestamp and git info.
 
@@ -416,6 +440,7 @@ def main() -> int:
     # ── Sync version ──
     print("\n[2/4] Syncing version info...")
     update_iss_version(version)
+    update_spec_version(version)
     inject_build_info(version)
 
     # ── Verify entry ──
