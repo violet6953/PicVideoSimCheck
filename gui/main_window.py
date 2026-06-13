@@ -8,6 +8,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QScrollArea,
@@ -100,6 +101,23 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tabs)
         splitter.setSizes([420, 980])
         layout.addWidget(splitter)
+
+        self._init_version_label()
+
+    def _init_version_label(self) -> None:
+        """Add a version info label to the bottom-right status bar."""
+        self._version_label = QLabel(self._get_version_text())
+        self._version_label.setObjectName("versionLabel")
+        self.statusBar().addPermanentWidget(self._version_label)
+
+    @staticmethod
+    def _get_version_text() -> str:
+        """Read build info; fallback to dev placeholder if not available."""
+        try:
+            from src.build_info import CRT_TIME, DEV_BY, VERSION
+            return f"ver：{VERSION} DevBy：{DEV_BY} CsrtTime：{CRT_TIME}"
+        except Exception:
+            return "ver：dev DevBy：RyuguShiori CsrtTime：--"
 
     def _load_app_settings(self) -> None:
         try:

@@ -127,6 +127,12 @@ QLabel#labelMuted {
     font-size: 12px;
 }
 
+QLabel#versionLabel {
+    color: #64748b;
+    font-size: 11px;
+    padding: 2px 8px;
+}
+
 QLabel#stageBadge {
     background-color: rgba(59, 130, 246, 0.15);
     color: #60a5fa;
