@@ -120,9 +120,16 @@ def cmd_group(args: argparse.Namespace) -> int:
             parent: dict[Path, Path] = {}
 
             def find(x: Path) -> Path:
-                if parent.get(x, x) != x:
-                    parent[x] = find(parent[x])
-                return parent.get(x, x)
+                root = x
+                while parent.get(root, root) != root:
+                    root = parent.get(root, root)
+
+                while parent.get(x, x) != root:
+                    parent_node = parent.get(x, x)
+                    parent[x] = root
+                    x = parent_node
+
+                return root
 
             def union(x: Path, y: Path) -> None:
                 px, py = find(x), find(y)
@@ -196,9 +203,16 @@ def cmd_dedup(args: argparse.Namespace) -> int:
             parent: dict[Path, Path] = {}
 
             def find(x: Path) -> Path:
-                if parent.get(x, x) != x:
-                    parent[x] = find(parent[x])
-                return parent.get(x, x)
+                root = x
+                while parent.get(root, root) != root:
+                    root = parent.get(root, root)
+
+                while parent.get(x, x) != root:
+                    parent_node = parent.get(x, x)
+                    parent[x] = root
+                    x = parent_node
+
+                return root
 
             def union(x: Path, y: Path) -> None:
                 px, py = find(x), find(y)

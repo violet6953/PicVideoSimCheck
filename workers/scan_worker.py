@@ -329,9 +329,19 @@ class ScanWorker(QThread):
             parent_map: dict[str, str] = {}
 
             def find(x: str) -> str:
-                if parent_map.get(x, x) != x:
-                    parent_map[x] = find(parent_map[x])
-                return parent_map.get(x, x)
+                # Iterative find with path compression to avoid recursion depth
+                # limits on very large file sets (80k+ files).
+                root = x
+                while parent_map.get(root, root) != root:
+                    root = parent_map.get(root, root)
+
+                # Compress path
+                while parent_map.get(x, x) != root:
+                    parent = parent_map.get(x, x)
+                    parent_map[x] = root
+                    x = parent
+
+                return root
 
             def union(x: str, y: str) -> None:
                 px, py = find(x), find(y)
