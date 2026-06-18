@@ -573,3 +573,208 @@ class AdaptiveBatchSizer:
         self._has_reduced = True
         logger.warning("[内存] 紧急缩减 批次 %d→%d", old, self.current)
         return self.current
+
+
+# ── Disk I/O monitoring ──────────────────────────────────────────────────
+
+_DISK_QUERY = None
+_DISK_COUNTERS = None
+_DISK_DRIVES: tuple[str, ...] = ()
+
+
+def _close_disk_query() -> None:
+    """Clean up the persistent PDH query used for disk I/O counters."""
+    global _DISK_QUERY, _DISK_COUNTERS, _DISK_DRIVES
+    if _DISK_QUERY is not None:
+        try:
+            ctypes.windll.pdh.PdhCloseQuery(_DISK_QUERY)
+        except Exception:
+            pass
+    _DISK_QUERY = None
+    _DISK_COUNTERS = None
+    _DISK_DRIVES = ()
+
+
+def _get_logical_drives(folders: list[str]) -> list[str]:
+    """Return sorted unique logical drive roots for the given folder paths."""
+    drives: set[str] = set()
+    for folder in folders:
+        try:
+            drive = os.path.splitdrive(os.path.abspath(folder))[0]
+            if drive:
+                drives.add(drive.upper() + os.sep)
+        except Exception:
+            continue
+    if not drives and os.name == "nt":
+        drives.add(os.path.splitdrive(os.path.abspath(os.sep))[0].upper() + os.sep)
+    return sorted(drives)
+
+
+def _get_pdh_rate_value(pdh, counter, fmt_value) -> float:
+    PDH_FMT_DOUBLE = 0x00000200
+    if pdh.PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, None, ctypes.byref(fmt_value)) == 0:
+        return max(0.0, fmt_value.doubleValue)
+    return 0.0
+
+
+def _get_logical_disk_io_speed_windows(folders: list[str] | None = None) -> dict[str, float] | None:
+    """Read per-logical-drive I/O.  Returns None if PDH counters are unavailable."""
+    global _DISK_QUERY, _DISK_COUNTERS, _DISK_DRIVES
+
+    pdh = ctypes.windll.pdh
+    PDH_FMT_DOUBLE = 0x00000200
+
+    class _CValueUnion(ctypes.Union):
+        _fields_ = [
+            ("longValue", ctypes.c_long),
+            ("doubleValue", ctypes.c_double),
+            ("largeValue", ctypes.c_longlong),
+            ("AnsiStringValue", ctypes.c_char_p),
+            ("WideStringValue", ctypes.c_wchar_p),
+        ]
+
+    class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [
+            ("CStatus", ctypes.c_ulong),
+            ("u", _CValueUnion),
+        ]
+
+    drives = _get_logical_drives(folders or [])
+
+    if _DISK_QUERY is None or _DISK_DRIVES != tuple(drives):
+        _close_disk_query()
+        if not drives:
+            return None
+
+        try:
+            query = ctypes.c_void_p()
+            if pdh.PdhOpenQueryW(None, 0, ctypes.byref(query)) != 0:
+                return None
+
+            counters: dict[str, ctypes.c_void_p] = {}
+            for drive in drives:
+                instance = drive.rstrip(os.sep)
+                read_path = rf"\LogicalDisk({instance})\Disk Read Bytes/sec"
+                write_path = rf"\LogicalDisk({instance})\Disk Write Bytes/sec"
+
+                read_counter = ctypes.c_void_p()
+                write_counter = ctypes.c_void_p()
+                if (
+                    pdh.PdhAddEnglishCounterW(query, read_path, 0, ctypes.byref(read_counter)) != 0
+                    or pdh.PdhAddEnglishCounterW(query, write_path, 0, ctypes.byref(write_counter)) != 0
+                ):
+                    pdh.PdhCloseQuery(query)
+                    return None
+
+                counters[f"read:{drive}"] = read_counter
+                counters[f"write:{drive}"] = write_counter
+
+            # First sample: rate counters need a baseline before they can
+            # return a meaningful value on the next collection.
+            pdh.PdhCollectQueryData(query)
+            _DISK_QUERY = query
+            _DISK_COUNTERS = counters
+            _DISK_DRIVES = tuple(drives)
+            return {
+                "total_bytes_per_sec": 0.0,
+                "read_bytes_per_sec": 0.0,
+                "write_bytes_per_sec": 0.0,
+            }
+        except Exception:
+            _close_disk_query()
+            return None
+
+    if pdh.PdhCollectQueryData(_DISK_QUERY) != 0:
+        _close_disk_query()
+        return None
+
+    total_read = 0.0
+    total_write = 0.0
+    fmt = _PDH_FMT_COUNTERVALUE()
+    for drive in drives:
+        read_counter = _DISK_COUNTERS.get(f"read:{drive}")
+        write_counter = _DISK_COUNTERS.get(f"write:{drive}")
+        if read_counter:
+            total_read += _get_pdh_rate_value(pdh, read_counter, fmt)
+        if write_counter:
+            total_write += _get_pdh_rate_value(pdh, write_counter, fmt)
+
+    return {
+        "total_bytes_per_sec": total_read + total_write,
+        "read_bytes_per_sec": total_read,
+        "write_bytes_per_sec": total_write,
+    }
+
+
+_SYSTEM_IO_SNAPSHOT: dict[str, float | None] = {"time": None, "read": None, "write": None}
+
+
+def _get_system_disk_io_speed_windows() -> dict[str, float]:
+    """System-wide disk I/O fallback using NtQuerySystemInformation.
+
+    This works even when the Windows performance-counter database is disabled
+    or the PDH logical-disk counters are not available.
+    """
+    import struct
+    import time
+
+    ntdll = ctypes.windll.ntdll
+    size = 2048
+    buf = ctypes.create_string_buffer(size)
+    if ntdll.NtQuerySystemInformation(2, buf, size, None) != 0:
+        return {
+            "total_bytes_per_sec": 0.0,
+            "read_bytes_per_sec": 0.0,
+            "write_bytes_per_sec": 0.0,
+        }
+
+    # IoReadTransferCount and IoWriteTransferCount follow IdleProcessTime.
+    read_bytes, write_bytes = struct.unpack_from("<QQ", buf.raw, 8)[:2]
+
+    now = time.perf_counter()
+    prev = _SYSTEM_IO_SNAPSHOT
+    result = {
+        "total_bytes_per_sec": 0.0,
+        "read_bytes_per_sec": 0.0,
+        "write_bytes_per_sec": 0.0,
+    }
+    if prev["time"] is not None and now > prev["time"]:
+        dt = now - prev["time"]
+        result["read_bytes_per_sec"] = max(0.0, (read_bytes - prev["read"]) / dt)
+        result["write_bytes_per_sec"] = max(0.0, (write_bytes - prev["write"]) / dt)
+        result["total_bytes_per_sec"] = result["read_bytes_per_sec"] + result["write_bytes_per_sec"]
+
+    prev["time"] = now
+    prev["read"] = read_bytes
+    prev["write"] = write_bytes
+    return result
+
+
+def get_disk_io_speed(folders: list[str] | None = None) -> dict[str, float]:
+    """Return current read/write throughput for the disks being scanned.
+
+    On Windows this first tries per-logical-drive PDH counters for the drives
+    that contain the selected folders.  If those counters are unavailable, it
+    falls back to system-wide disk I/O via NtQuerySystemInformation.
+    """
+    if os.name != "nt":
+        return {
+            "total_bytes_per_sec": 0.0,
+            "read_bytes_per_sec": 0.0,
+            "write_bytes_per_sec": 0.0,
+        }
+    try:
+        pdh_result = _get_logical_disk_io_speed_windows(folders)
+        if pdh_result is not None:
+            return pdh_result
+    except Exception:
+        pass
+    try:
+        return _get_system_disk_io_speed_windows()
+    except Exception:
+        return {
+            "total_bytes_per_sec": 0.0,
+            "read_bytes_per_sec": 0.0,
+            "write_bytes_per_sec": 0.0,
+        }

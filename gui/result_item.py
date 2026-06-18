@@ -21,8 +21,16 @@ class ResultItemWidget(QFrame):
     clicked = Signal(str)
     selection_changed = Signal()
 
-    def __init__(self, path: str, name: str, resolution: str, size_text: str,
-                 duration_text: str = "", is_video: bool = False, parent=None):
+    def __init__(
+        self,
+        path: str,
+        name: str = "",
+        resolution: str = "",
+        size_text: str = "",
+        duration_text: str = "",
+        is_video: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.path = path
         self.is_video = is_video
@@ -45,10 +53,11 @@ class ResultItemWidget(QFrame):
         top_layout.addWidget(self.checkbox)
         top_layout.addStretch()
 
-        if is_video and duration_text:
-            indicator = QLabel(duration_text)
-            indicator.setObjectName("videoIndicator")
-            top_layout.addWidget(indicator)
+        self.duration_indicator: QLabel | None = None
+        if is_video:
+            self.duration_indicator = QLabel(duration_text)
+            self.duration_indicator.setObjectName("videoIndicator")
+            top_layout.addWidget(self.duration_indicator)
 
         layout.addLayout(top_layout)
 
@@ -104,6 +113,20 @@ class ResultItemWidget(QFrame):
 
     def set_checked(self, checked: bool) -> None:
         self.checkbox.setChecked(checked)
+
+    def set_metadata(
+        self,
+        width: int,
+        height: int,
+        size_formatted: str,
+        duration_formatted: str = "",
+    ) -> None:
+        """Update resolution, size and duration labels after async metadata load."""
+        resolution = f"{width}x{height}" if width and height else "未知"
+        meta_parts = [p for p in [resolution, size_formatted, duration_formatted] if p]
+        self.meta_label.setText(" · ".join(meta_parts))
+        if self.duration_indicator is not None:
+            self.duration_indicator.setText(duration_formatted)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

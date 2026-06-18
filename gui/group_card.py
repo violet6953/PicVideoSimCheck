@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
@@ -77,7 +79,14 @@ class GroupCard(QFrame):
         paths_in_group = self._paths_in_group
         for item in items:
             path = item["path"]
-            rw = ResultItemWidget(path=path, is_video=self.is_video)
+            rw = ResultItemWidget(
+                path=path,
+                name=item.get("name", Path(path).name),
+                resolution=item.get("resolution", "未知"),
+                size_text=item.get("size_formatted", ""),
+                duration_text=item.get("duration_formatted", "") if self.is_video else "",
+                is_video=self.is_video,
+            )
             rw.clicked.connect(lambda p=path: self.preview_requested.emit(p, paths_in_group))
             rw.selection_changed.connect(self._on_selection_changed)
             self.flow.addWidget(rw)

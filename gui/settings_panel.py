@@ -28,15 +28,30 @@ from src.memory_utils import (
 
 
 def _format_speed(bytes_per_sec: float) -> str:
-    """Format bytes per second as human-readable string."""
+    """Format bytes per second as a fixed-width string (XXXX.XX unit)."""
     if bytes_per_sec < 1024:
-        return f"{bytes_per_sec:.0f} B/s"
+        value = bytes_per_sec
+        unit = "B/s "
     elif bytes_per_sec < 1024 * 1024:
-        return f"{bytes_per_sec / 1024:.1f} KB/s"
+        value = bytes_per_sec / 1024
+        unit = "KB/s"
     elif bytes_per_sec < 1024 * 1024 * 1024:
-        return f"{bytes_per_sec / (1024 * 1024):.1f} MB/s"
+        value = bytes_per_sec / (1024 * 1024)
+        unit = "MB/s"
     else:
-        return f"{bytes_per_sec / (1024 * 1024 * 1024):.2f} GB/s"
+        value = bytes_per_sec / (1024 * 1024 * 1024)
+        unit = "GB/s"
+    value = min(value, 9999.99)
+    return f"{value:>7.2f} {unit}"
+
+
+def _speed_color(bytes_per_sec: float) -> str:
+    """Return color for a single read/write speed."""
+    if bytes_per_sec >= 100 * 1024 * 1024:
+        return "#ef4444"  # red
+    if bytes_per_sec >= 50 * 1024 * 1024:
+        return "#f59e0b"  # yellow
+    return "#10b981"  # green
 
 
 class SettingsPanel(QFrame):
@@ -139,39 +154,30 @@ class SettingsPanel(QFrame):
             self.vram_bar.setValue(0)
             self.vram_pct.setText("--%")
 
-        # --- Disk I/O speed ---
+        # --- Disk I/O speed (for the drives being scanned) ---
         try:
-            io_speed = get_disk_io_speed()
-            total_speed = io_speed.get("total_bytes_per_sec", 0.0)
-            # Cap bar at 100 MB/s saturation threshold
-            saturation = 100 * 1024 * 1024
-            disk_pct = min(100, int((total_speed / saturation) * 100))
-            self.disk_bar.setValue(disk_pct)
-            self.disk_pct.setText(f"{disk_pct}%")
-
+            io_speed = get_disk_io_speed(self._folders)
             read_speed = io_speed.get("read_bytes_per_sec", 0.0)
             write_speed = io_speed.get("write_bytes_per_sec", 0.0)
-            self.disk_speed_label.setText(f"R {_format_speed(read_speed)} / W {_format_speed(write_speed)}")
-
-            if disk_pct >= 85:
-                self.disk_bar.setStyleSheet("""
-                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
-                    QProgressBar::chunk { background-color: #ef4444; border-radius: 4px; }
-                """)
-            elif disk_pct >= 70:
-                self.disk_bar.setStyleSheet("""
-                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
-                    QProgressBar::chunk { background-color: #f59e0b; border-radius: 4px; }
-                """)
-            else:
-                self.disk_bar.setStyleSheet("""
-                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
-                    QProgressBar::chunk { background-color: #10b981; border-radius: 4px; }
-                """)
+            read_color = _speed_color(read_speed)
+            write_color = _speed_color(write_speed)
+            self.disk_io_label.setText(
+                f"<span style=\"color: {read_color}; white-space: pre\">读取 {_format_speed(read_speed)}</span>"
+                f"<span style=\"color: #9ca3af\"> / </span>"
+                f"<span style=\"color: {write_color}; white-space: pre\">写入 {_format_speed(write_speed)}</span>"
+            )
+            self.disk_io_label.setTextFormat(Qt.TextFormat.RichText)
+            self.disk_io_label.setStyleSheet(
+                "font-size: 10px; font-family: Consolas, 'Microsoft YaHei', monospace; "
+                "background: transparent; color: #9ca3af;"
+            )
         except Exception:
-            self.disk_bar.setValue(0)
-            self.disk_pct.setText("--%")
-            self.disk_speed_label.setText("--")
+            self.disk_io_label.setText("--")
+            self.disk_io_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.disk_io_label.setStyleSheet(
+                "font-size: 10px; font-family: Consolas, 'Microsoft YaHei', monospace; "
+                "background: transparent; color: #9ca3af;"
+            )
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -229,10 +235,11 @@ class SettingsPanel(QFrame):
         monitor_grid.setColumnStretch(0, 0)
         monitor_grid.setColumnStretch(1, 0)
         monitor_grid.setColumnStretch(2, 0)
-        monitor_grid.setColumnStretch(3, 0)
+        monitor_grid.setColumnStretch(3, 1)
+        monitor_grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         # Fixed progress-bar width so RAM/VRAM/Disk bars share the same length.
-        BAR_WIDTH = 160
+        BAR_WIDTH = 214
         BAR_HEIGHT = 8
 
         # System RAM
@@ -299,35 +306,19 @@ class SettingsPanel(QFrame):
         self.disk_label = QLabel("磁盘")
         self.disk_label.setObjectName("labelMuted")
         self.disk_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
-        self.disk_bar = QProgressBar()
-        self.disk_bar.setRange(0, 100)
-        self.disk_bar.setValue(0)
-        self.disk_bar.setTextVisible(False)
-        self.disk_bar.setFixedSize(BAR_WIDTH, BAR_HEIGHT)
-        self.disk_bar.setStyleSheet("""
-            QProgressBar {
-                background-color: rgba(255,255,255,0.08);
-                border-radius: 4px;
-            }
-            QProgressBar::chunk {
-                background-color: #10b981;
-                border-radius: 4px;
-            }
-        """)
-        self.disk_pct = QLabel("--%")
-        self.disk_pct.setObjectName("labelMuted")
-        self.disk_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
         monitor_grid.addWidget(self.disk_icon, 2, 0)
         monitor_grid.addWidget(self.disk_label, 2, 1)
-        monitor_grid.addWidget(self.disk_bar, 2, 2)
-        monitor_grid.addWidget(self.disk_pct, 2, 3)
 
-        # Real-time disk R/W speed under the disk bar, right-aligned
-        self.disk_speed_label = QLabel("--")
-        self.disk_speed_label.setObjectName("labelMuted")
-        self.disk_speed_label.setStyleSheet("font-size: 10px; background: transparent;")
-        self.disk_speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        monitor_grid.addWidget(self.disk_speed_label, 3, 2, 1, 2)
+        # Real-time disk R/W speed, centered under the RAM/VRAM bars.
+        self.disk_io_label = QLabel("--")
+        self.disk_io_label.setObjectName("labelMuted")
+        self.disk_io_label.setStyleSheet(
+            "font-size: 10px; font-family: Consolas, 'Microsoft YaHei', monospace; "
+            "background: transparent; color: #9ca3af;"
+        )
+        self.disk_io_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.disk_io_label.setFixedWidth(BAR_WIDTH)
+        monitor_grid.addWidget(self.disk_io_label, 2, 2)
 
         layout.addLayout(monitor_grid)
 
