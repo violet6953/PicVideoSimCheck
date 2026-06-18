@@ -26,10 +26,17 @@ class ResultsPanel(QFrame):
     preview_requested = Signal(str, list)
     selection_changed = Signal()
 
+    # Number of groups to render per page to keep widget creation fast.
+    GROUPS_PER_PAGE = 50
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("panel")
+        self._all_groups: list[dict] = []
         self._cards: list[GroupCard] = []
+        self._load_more_btn: QPushButton | None = None
+        self._current_page = 0
+        self._blocklist_count = 0
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -96,28 +103,37 @@ class ResultsPanel(QFrame):
 
     def set_results(self, groups: list[dict], blocklist_count: int = 0) -> None:
         self.clear_results()
+        self._all_groups = list(groups)
+        self._blocklist_count = blocklist_count
+        self._current_page = 0
+
         if not groups:
             self.summary_label.setText("未发现相似文件。")
             self.blocklist_info_label.setText(f"已排除 {blocklist_count} 组误报" if blocklist_count > 0 else "")
             return
 
-        img_groups = [g for g in groups if g.get("type") == "image"]
-        vid_groups = [g for g in groups if g.get("type") == "video"]
-        text = f"发现 {len(groups)} 组相似/重复文件"
-        if img_groups and vid_groups:
-            text += f"（{len(img_groups)} 组图片、{len(vid_groups)} 组视频）"
-
-        total_items = sum(len(g.get("items", [])) for g in groups)
-        text += f"，{total_items} 个文件"
-        self.summary_label.setText(text)
+        self._update_summary()
         self.blocklist_info_label.setText(f"已排除 {blocklist_count} 组误报" if blocklist_count > 0 else "")
 
-        # Remove stretch first
+        # Render first page
+        self._render_page(0)
+
+    def _render_page(self, page: int) -> None:
+        """Render one page of groups. Removes the load-more button first if present."""
+        if self._load_more_btn:
+            self.groups_layout.removeWidget(self._load_more_btn)
+            self._load_more_btn.deleteLater()
+            self._load_more_btn = None
+
+        # Remove stretch to append widgets, then re-add it at the end
         stretch = self.groups_layout.takeAt(self.groups_layout.count() - 1)
 
-        for idx, group in enumerate(groups, 1):
+        start = page * self.GROUPS_PER_PAGE
+        end = min(start + self.GROUPS_PER_PAGE, len(self._all_groups))
+        for idx in range(start, end):
+            group = self._all_groups[idx]
             card = GroupCard(
-                group_index=idx,
+                group_index=idx + 1,
                 group_type=group.get("type", "image"),
                 items=group.get("items", []),
             )
@@ -128,13 +144,36 @@ class ResultsPanel(QFrame):
             self.groups_layout.addWidget(card)
             self._cards.append(card)
 
+        self._current_page = page
+
+        # Add load-more button if there are more groups
+        if end < len(self._all_groups):
+            remaining = len(self._all_groups) - end
+            self._load_more_btn = QPushButton(f"加载更多（还剩 {remaining} 组）")
+            self._load_more_btn.setObjectName("secondary")
+            self._load_more_btn.clicked.connect(self._load_next_page)
+            self.groups_layout.addWidget(self._load_more_btn)
+
         self.groups_layout.addStretch()
+        if stretch and stretch.widget():
+            stretch.widget().deleteLater()
+
+    def _load_next_page(self) -> None:
+        next_page = self._current_page + 1
+        if next_page * self.GROUPS_PER_PAGE < len(self._all_groups):
+            self._render_page(next_page)
 
     def clear_results(self) -> None:
         for card in self._cards:
             self.groups_layout.removeWidget(card)
             card.deleteLater()
         self._cards.clear()
+        self._all_groups.clear()
+        if self._load_more_btn:
+            self.groups_layout.removeWidget(self._load_more_btn)
+            self._load_more_btn.deleteLater()
+            self._load_more_btn = None
+        self._current_page = 0
         self.summary_label.setText("请在左侧选择文件夹并点击“开始扫描”")
         self.blocklist_info_label.setText("")
 
@@ -143,16 +182,33 @@ class ResultsPanel(QFrame):
             self.groups_layout.removeWidget(card)
             card.deleteLater()
             self._cards.remove(card)
+        # Keep the stored full group list in sync
+        card_paths = {item["path"] for item in card.items}
+        self._all_groups = [
+            g
+            for g in self._all_groups
+            if {item["path"] for item in g.get("items", [])} != card_paths
+        ]
         self._update_summary()
 
     def remove_items(self, paths: set[str]) -> None:
-        empty_cards = []
+        cards_to_remove = []
         for card in self._cards:
             card.remove_items_by_path(paths)
-            if card.is_empty():
-                empty_cards.append(card)
-        for card in empty_cards:
+            # Remove the group if it is empty or only one item remains,
+            # because a single file is no longer a similarity group.
+            if card.is_empty() or card.has_single_item():
+                cards_to_remove.append(card)
+        for card in cards_to_remove:
             self.remove_card(card)
+
+        # Update the stored full group list, dropping groups with 0 or 1 item
+        new_all_groups: list[dict] = []
+        for g in self._all_groups:
+            new_items = [item for item in g.get("items", []) if item["path"] not in paths]
+            if len(new_items) > 1:
+                new_all_groups.append({**g, "items": new_items})
+        self._all_groups = new_all_groups
         self._update_summary()
 
     def get_selected_paths(self) -> list[str]:
@@ -162,12 +218,11 @@ class ResultsPanel(QFrame):
         return paths
 
     def get_all_groups_paths(self) -> list[list[str]]:
-        groups = []
-        for card in self._cards:
-            paths = [item["path"] for item in card.items]
-            if paths:
-                groups.append(paths)
-        return groups
+        return [
+            [item["path"] for item in g.get("items", [])]
+            for g in self._all_groups
+            if g.get("items")
+        ]
 
     def set_blocklist_info(self, count: int) -> None:
         self.blocklist_info_label.setText(f"已排除 {count} 组误报" if count > 0 else "")
@@ -233,13 +288,13 @@ class ResultsPanel(QFrame):
             QMessageBox.warning(self, "删除失败", f"{len(failed)} 个文件删除失败：\n" + "\n".join(f"{p}: {e}" for p, e in failed))
 
     def _update_summary(self) -> None:
-        if not self._cards:
+        if not self._all_groups:
             self.summary_label.setText("暂无相似文件分组。")
             return
-        img_groups = [c for c in self._cards if c.group_type == "image"]
-        vid_groups = [c for c in self._cards if c.group_type == "video"]
-        total_items = sum(len(c.items) for c in self._cards)
-        text = f"共 {len(self._cards)} 组相似文件"
+        img_groups = [g for g in self._all_groups if g.get("type") == "image"]
+        vid_groups = [g for g in self._all_groups if g.get("type") == "video"]
+        total_items = sum(len(g.get("items", [])) for g in self._all_groups)
+        text = f"共 {len(self._all_groups)} 组相似文件"
         if img_groups and vid_groups:
             text += f"（{len(img_groups)} 组图片、{len(vid_groups)} 组视频）"
         text += f"，{total_items} 个文件"

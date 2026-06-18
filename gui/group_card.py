@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from .flow_layout import FlowLayout
+from .metadata_loader import GroupMetadataLoader
 from .result_item import ResultItemWidget
 
 
@@ -22,6 +23,7 @@ class GroupCard(QFrame):
         self.group_index = group_index
         self.group_type = group_type  # "image" or "video"
         self.items = items
+        self.is_video = group_type == "video"
         self.setObjectName("groupCardVideo" if group_type == "video" else "groupCard")
 
         layout = QVBoxLayout(self)
@@ -40,29 +42,9 @@ class GroupCard(QFrame):
         # Thumbnail grid
         self.flow = FlowLayout(spacing=12)
         self._item_widgets: list[ResultItemWidget] = []
-        paths_in_group: list[str] = []
+        self._paths_in_group: list[str] = [item["path"] for item in items]
 
-        for i, item in enumerate(items):
-            path = item["path"]
-            paths_in_group.append(path)
-            rw = ResultItemWidget(
-                path=path,
-                name=item.get("name", ""),
-                resolution=item.get("resolution", ""),
-                size_text=item.get("size_formatted", ""),
-                duration_text=item.get("duration_formatted", ""),
-                is_video=(group_type == "video"),
-            )
-            rw.clicked.connect(lambda p=path: self.preview_requested.emit(p, paths_in_group))
-            rw.selection_changed.connect(self._on_selection_changed)
-            self.flow.addWidget(rw)
-            self._item_widgets.append(rw)
-
-        container = QFrame()
-        container.setLayout(self.flow)
-        layout.addWidget(container)
-
-        # Footer actions
+        # Footer actions (create before widgets so selection signals can update delete_btn)
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
 
@@ -79,13 +61,65 @@ class GroupCard(QFrame):
         self.delete_btn.clicked.connect(lambda: self.delete_group_selected.emit(self))
         footer_layout.addWidget(self.delete_btn)
 
+        # Placeholder items: show path + loading state immediately
+        self._create_widgets(items)
+
+        container = QFrame()
+        container.setLayout(self.flow)
+        layout.addWidget(container)
         layout.addLayout(footer_layout)
 
-        # Auto-check all except the first (done after delete_btn is created)
+        # Load metadata asynchronously and re-sort widgets when done
+        self._load_metadata()
+
+    def _create_widgets(self, items: list[dict]) -> None:
+        """Create ResultItemWidget for each item. Items may be incomplete dicts."""
+        paths_in_group = self._paths_in_group
+        for item in items:
+            path = item["path"]
+            rw = ResultItemWidget(path=path, is_video=self.is_video)
+            rw.clicked.connect(lambda p=path: self.preview_requested.emit(p, paths_in_group))
+            rw.selection_changed.connect(self._on_selection_changed)
+            self.flow.addWidget(rw)
+            self._item_widgets.append(rw)
+
+        # Auto-check all except the first
         for i, rw in enumerate(self._item_widgets):
             if i > 0:
                 rw.set_checked(True)
 
+    def _load_metadata(self) -> None:
+        from PySide6.QtCore import QThreadPool
+
+        loader = GroupMetadataLoader(self._paths_in_group, is_video=self.is_video)
+        loader.signals.loaded.connect(self._on_metadata_loaded)
+        QThreadPool.globalInstance().start(loader)
+
+    def _on_metadata_loaded(self, sorted_items: list[dict]) -> None:
+        """Replace placeholder widgets with sorted metadata-populated widgets."""
+        # Remove old widgets
+        for rw in self._item_widgets:
+            self.flow.removeWidget(rw)
+            rw.deleteLater()
+        self._item_widgets.clear()
+
+        self.items = sorted_items
+        self._paths_in_group = [item["path"] for item in sorted_items]
+        self._create_widgets(sorted_items)
+
+        # Apply metadata to each widget
+        for rw, item in zip(self._item_widgets, sorted_items):
+            rw.set_metadata(
+                width=item.get("width", 0),
+                height=item.get("height", 0),
+                size_formatted=item.get("size_formatted", ""),
+                duration_formatted=item.get("duration_formatted", "") if self.is_video else "",
+            )
+
+        # Re-apply selection state: keep first unselected, others selected
+        for i, rw in enumerate(self._item_widgets):
+            rw.set_checked(i > 0)
+        self._update_delete_button()
     def get_selected_paths(self) -> list[str]:
         return [w.path for w in self._item_widgets if w.is_selected()]
 
@@ -99,6 +133,10 @@ class GroupCard(QFrame):
 
     def is_empty(self) -> bool:
         return len(self._item_widgets) == 0
+
+    def has_single_item(self) -> bool:
+        """Return True if only one item remains in the group."""
+        return len(self._item_widgets) == 1
 
     def _on_selection_changed(self) -> None:
         self._update_delete_button()
