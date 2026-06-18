@@ -19,10 +19,23 @@ from PySide6.QtWidgets import (
 
 from src.memory_utils import (
     get_current_process_memory_bytes,
+    get_disk_io_speed,
     get_gpu_memory_info,
     get_peak_memory_from_counters,
     get_system_memory,
 )
+
+
+def _format_speed(bytes_per_sec: float) -> str:
+    """Format bytes per second as human-readable string."""
+    if bytes_per_sec < 1024:
+        return f"{bytes_per_sec:.0f} B/s"
+    elif bytes_per_sec < 1024 * 1024:
+        return f"{bytes_per_sec / 1024:.1f} KB/s"
+    elif bytes_per_sec < 1024 * 1024 * 1024:
+        return f"{bytes_per_sec / (1024 * 1024):.1f} MB/s"
+    else:
+        return f"{bytes_per_sec / (1024 * 1024 * 1024):.2f} GB/s"
 
 
 class SettingsPanel(QFrame):
@@ -113,7 +126,7 @@ class SettingsPanel(QFrame):
                     else:
                         self.vram_bar.setStyleSheet("""
                             QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
-                            QProgressBar::chunk { background-color: #a855f7; border-radius: 4px; }
+                            QProgressBar::chunk { background-color: #3b82f6; border-radius: 4px; }
                         """)
                 else:
                     self.vram_bar.setValue(0)
@@ -124,6 +137,40 @@ class SettingsPanel(QFrame):
         except Exception:
             self.vram_bar.setValue(0)
             self.vram_pct.setText("--%")
+
+        # --- Disk I/O speed ---
+        try:
+            io_speed = get_disk_io_speed()
+            total_speed = io_speed.get("total_bytes_per_sec", 0.0)
+            # Cap bar at 100 MB/s saturation threshold
+            saturation = 100 * 1024 * 1024
+            disk_pct = min(100, int((total_speed / saturation) * 100))
+            self.disk_bar.setValue(disk_pct)
+            self.disk_pct.setText(f"{disk_pct}%")
+
+            read_speed = io_speed.get("read_bytes_per_sec", 0.0)
+            write_speed = io_speed.get("write_bytes_per_sec", 0.0)
+            self.disk_speed_label.setText(f"R {_format_speed(read_speed)} / W {_format_speed(write_speed)}")
+
+            if disk_pct >= 85:
+                self.disk_bar.setStyleSheet("""
+                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                    QProgressBar::chunk { background-color: #ef4444; border-radius: 4px; }
+                """)
+            elif disk_pct >= 70:
+                self.disk_bar.setStyleSheet("""
+                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                    QProgressBar::chunk { background-color: #f59e0b; border-radius: 4px; }
+                """)
+            else:
+                self.disk_bar.setStyleSheet("""
+                    QProgressBar { background-color: rgba(255,255,255,0.08); border-radius: 4px; }
+                    QProgressBar::chunk { background-color: #10b981; border-radius: 4px; }
+                """)
+        except Exception:
+            self.disk_bar.setValue(0)
+            self.disk_pct.setText("--%")
+            self.disk_speed_label.setText("--")
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -175,22 +222,29 @@ class SettingsPanel(QFrame):
         gpu_layout.addWidget(self.gpu_status_label, 1)
         layout.addLayout(gpu_layout)
 
-        # ---- Memory / VRAM monitor ----
+        # ---- Memory / VRAM / Disk monitor ----
+        monitor_grid = QGridLayout()
+        monitor_grid.setSpacing(8)
+        monitor_grid.setColumnStretch(0, 0)
+        monitor_grid.setColumnStretch(1, 0)
+        monitor_grid.setColumnStretch(2, 0)
+        monitor_grid.setColumnStretch(3, 0)
+
+        # Fixed progress-bar width so RAM/VRAM/Disk bars share the same length.
+        BAR_WIDTH = 160
+        BAR_HEIGHT = 8
+
         # System RAM
-        ram_layout = QHBoxLayout()
-        ram_layout.setSpacing(8)
         self.ram_icon = QLabel("🧠")
         self.ram_icon.setStyleSheet("font-size: 14px; background: transparent;")
-        ram_layout.addWidget(self.ram_icon)
         self.ram_label = QLabel("内存")
         self.ram_label.setObjectName("labelMuted")
         self.ram_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
-        ram_layout.addWidget(self.ram_label)
         self.ram_bar = QProgressBar()
         self.ram_bar.setRange(0, 100)
         self.ram_bar.setValue(0)
         self.ram_bar.setTextVisible(False)
-        self.ram_bar.setFixedHeight(8)
+        self.ram_bar.setFixedSize(BAR_WIDTH, BAR_HEIGHT)
         self.ram_bar.setStyleSheet("""
             QProgressBar {
                 background-color: rgba(255,255,255,0.08);
@@ -201,44 +255,80 @@ class SettingsPanel(QFrame):
                 border-radius: 4px;
             }
         """)
-        ram_layout.addWidget(self.ram_bar, 1)
         self.ram_pct = QLabel("--%")
         self.ram_pct.setObjectName("labelMuted")
         self.ram_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
-        ram_layout.addWidget(self.ram_pct)
-        layout.addLayout(ram_layout)
+        monitor_grid.addWidget(self.ram_icon, 0, 0)
+        monitor_grid.addWidget(self.ram_label, 0, 1)
+        monitor_grid.addWidget(self.ram_bar, 0, 2)
+        monitor_grid.addWidget(self.ram_pct, 0, 3)
 
-        # GPU VRAM
-        vram_layout = QHBoxLayout()
-        vram_layout.setSpacing(8)
+        # GPU VRAM (same bar style as RAM)
         self.vram_icon = QLabel("🎮")
         self.vram_icon.setStyleSheet("font-size: 14px; background: transparent;")
-        vram_layout.addWidget(self.vram_icon)
         self.vram_label = QLabel("显存")
         self.vram_label.setObjectName("labelMuted")
         self.vram_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
-        vram_layout.addWidget(self.vram_label)
         self.vram_bar = QProgressBar()
         self.vram_bar.setRange(0, 100)
         self.vram_bar.setValue(0)
         self.vram_bar.setTextVisible(False)
-        self.vram_bar.setFixedHeight(8)
+        self.vram_bar.setFixedSize(BAR_WIDTH, BAR_HEIGHT)
         self.vram_bar.setStyleSheet("""
             QProgressBar {
                 background-color: rgba(255,255,255,0.08);
                 border-radius: 4px;
             }
             QProgressBar::chunk {
-                background-color: #a855f7;
+                background-color: #3b82f6;
                 border-radius: 4px;
             }
         """)
-        vram_layout.addWidget(self.vram_bar, 1)
         self.vram_pct = QLabel("--%")
         self.vram_pct.setObjectName("labelMuted")
         self.vram_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
-        vram_layout.addWidget(self.vram_pct)
-        layout.addLayout(vram_layout)
+        monitor_grid.addWidget(self.vram_icon, 1, 0)
+        monitor_grid.addWidget(self.vram_label, 1, 1)
+        monitor_grid.addWidget(self.vram_bar, 1, 2)
+        monitor_grid.addWidget(self.vram_pct, 1, 3)
+
+        # Disk I/O speed
+        self.disk_icon = QLabel("💿")
+        self.disk_icon.setStyleSheet("font-size: 14px; background: transparent;")
+        self.disk_label = QLabel("磁盘")
+        self.disk_label.setObjectName("labelMuted")
+        self.disk_label.setStyleSheet("font-size: 11px; min-width: 36px; background: transparent;")
+        self.disk_bar = QProgressBar()
+        self.disk_bar.setRange(0, 100)
+        self.disk_bar.setValue(0)
+        self.disk_bar.setTextVisible(False)
+        self.disk_bar.setFixedSize(BAR_WIDTH, BAR_HEIGHT)
+        self.disk_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: rgba(255,255,255,0.08);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #10b981;
+                border-radius: 4px;
+            }
+        """)
+        self.disk_pct = QLabel("--%")
+        self.disk_pct.setObjectName("labelMuted")
+        self.disk_pct.setStyleSheet("font-size: 11px; min-width: 42px; background: transparent;")
+        monitor_grid.addWidget(self.disk_icon, 2, 0)
+        monitor_grid.addWidget(self.disk_label, 2, 1)
+        monitor_grid.addWidget(self.disk_bar, 2, 2)
+        monitor_grid.addWidget(self.disk_pct, 2, 3)
+
+        # Real-time disk R/W speed under the disk bar, right-aligned
+        self.disk_speed_label = QLabel("--")
+        self.disk_speed_label.setObjectName("labelMuted")
+        self.disk_speed_label.setStyleSheet("font-size: 10px; background: transparent;")
+        self.disk_speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        monitor_grid.addWidget(self.disk_speed_label, 3, 2, 1, 2)
+
+        layout.addLayout(monitor_grid)
 
         # Image threshold
         layout.addWidget(QLabel("图片相似度阈值"))
