@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     QUrl,
     Qt,
 )
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QScreen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -44,8 +44,6 @@ class PreviewDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("预览")
-        # 20:9 aspect ratio, height 800px
-        self.resize(1778, 800)
         self._paths: list[str] = []
         self._current_index = 0
         self._is_video_list: list[bool] = []
@@ -295,6 +293,41 @@ class PreviewDialog(QDialog):
         super().showEvent(event)
         QTimer.singleShot(0, self._update_geometry)
 
+    def _center_on_parent_screen(self) -> None:
+        """Resize and center the dialog on the screen where the parent window is."""
+        parent = self.parent()
+        if parent is not None:
+            screen = parent.screen()
+        else:
+            screen = QApplication.primaryScreen()
+
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        screen_w = available.width()
+        screen_h = available.height()
+
+        # Use 85% of the available screen area while preserving the screen's
+        # aspect ratio, so the preview window scales with the current display.
+        scale = 0.85
+        target_w = int(screen_w * scale)
+        target_h = int(screen_h * scale)
+
+        # Ensure the dialog keeps the same aspect ratio as the screen.
+        # If the computed box is too tall/wide, shrink it to fit.
+        screen_ratio = screen_w / screen_h
+        dialog_ratio = target_w / target_h
+        if dialog_ratio > screen_ratio:
+            target_w = int(target_h * screen_ratio)
+        elif dialog_ratio < screen_ratio:
+            target_h = int(target_w / screen_ratio)
+
+        # Center on the available geometry of that screen
+        x = available.x() + (screen_w - target_w) // 2
+        y = available.y() + (screen_h - target_h) // 2
+        self.setGeometry(x, y, target_w, target_h)
+
     def open_group(self, start_path: str, paths: list[str]) -> None:
         self._paths = paths
         self._is_video_list = []
@@ -305,6 +338,7 @@ class PreviewDialog(QDialog):
             self._current_index = paths.index(start_path)
         except ValueError:
             self._current_index = 0
+        self._center_on_parent_screen()
         self._update_display(animate=False)
         self.show()
         self.raise_()
