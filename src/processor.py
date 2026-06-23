@@ -82,7 +82,7 @@ class BatchProcessor:
 
             gpu_sim = GPUSimilarity()
 
-            def progress_callback(current: int, total: int) -> bool:
+            def progress_callback(current: int, total: int, metadata: dict | None = None) -> bool:
                 return self.cancelled()
 
             return gpu_sim.find_duplicates(

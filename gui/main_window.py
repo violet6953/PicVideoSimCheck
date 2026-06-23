@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QVBoxLayout,
@@ -22,6 +23,7 @@ from services.blocklist_service import (
     filter_blocklist_for_folders,
     load_blocklist,
 )
+from services.feature_cache_service import get_cache_dir, set_cache_dir
 from workers.scan_worker import ScanWorker
 
 from .animated_tabs import AnimatedTabs
@@ -29,7 +31,9 @@ from .blocklist_panel import BlocklistPanel
 from .preview_dialog import PreviewDialog
 from .progress_panel import ProgressPanel
 from .results_panel import ResultsPanel
+from .settings_dialog import SettingsDialog
 from .settings_panel import SettingsPanel
+from .win_dark_titlebar import set_dark_title_bar
 
 
 class MainWindow(QMainWindow):
@@ -80,6 +84,17 @@ class MainWindow(QMainWindow):
 
         self.progress_panel = ProgressPanel()
         left_layout.addWidget(self.progress_panel)
+
+        # Settings button at the bottom-left, outside the scroll area
+        settings_btn_layout = QHBoxLayout()
+        settings_btn_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_btn = QPushButton("设置")
+        self.settings_btn.setObjectName("secondary")
+        self.settings_btn.setFixedHeight(32)
+        self.settings_btn.clicked.connect(self._open_settings)
+        settings_btn_layout.addWidget(self.settings_btn)
+        settings_btn_layout.addStretch()
+        left_layout.addLayout(settings_btn_layout)
 
         splitter.addWidget(left_widget)
 
@@ -136,6 +151,11 @@ class MainWindow(QMainWindow):
                 "video_max_frames": int(self._settings.value("video_max_frames", 32)),
             }
             self.settings_panel.load_settings(saved)
+
+            # Apply custom cache directory if the user has set one.
+            cache_dir = self._settings.value("cache_dir", "")
+            if isinstance(cache_dir, str) and cache_dir:
+                set_cache_dir(cache_dir)
         except Exception:
             pass
 
@@ -154,12 +174,29 @@ class MainWindow(QMainWindow):
         self._settings.setValue("video_max_frames", s["video_max_frames"])
         self._settings.setValue("geometry", self.saveGeometry())
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        set_dark_title_bar(int(self.winId()))
+
     def closeEvent(self, event) -> None:
         self._save_app_settings()
         if self._worker and self._worker.isRunning():
             self._cancel_event.set()
             self._worker.wait(2000)
         event.accept()
+
+    def _open_settings(self) -> None:
+        """Open the application settings dialog."""
+        dialog = SettingsDialog(current_cache_dir=str(get_cache_dir()), parent=self)
+        if dialog.exec() != SettingsDialog.DialogCode.Accepted:
+            return
+
+        new_dir = dialog.selected_cache_dir()
+        try:
+            set_cache_dir(new_dir)
+            self._settings.setValue("cache_dir", new_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法设置缓存目录：\n{e}")
 
     def _check_gpu(self) -> None:
         try:

@@ -41,9 +41,12 @@ OUTPUT_DIR = PROJECT_ROOT / "Output"        # 手动安装包输出目录
 ICON_PATH = BUILD_DIR / "icon.ico"
 ENTRY_SCRIPT = PROJECT_ROOT / "desktop.py"
 
+sys.path.insert(0, str(BUILD_DIR))
+from icon_utils import ensure_build_icon  # noqa: E402
+
 # Default version used when --version is not provided and installer.iss
 # does not contain a version. Change this to bump the build version.
-DEFAULT_VERSION = "1.0.4"
+DEFAULT_VERSION = "1.0.6"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -355,6 +358,14 @@ def main() -> int:
             return 1
 
     start_time = datetime.now()
+
+    # Ensure Windows ICO is up to date before every build.
+    try:
+        ensure_build_icon(PROJECT_ROOT)
+        print(f"  Icon regenerated: {ICON_PATH}")
+    except FileNotFoundError as e:
+        print(f"\n[FAIL] {e}")
+        return 1
 
     # ── Clean ──
     if not args.no_clean:

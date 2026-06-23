@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.similarity import ImageSimilarity
-from src.utils import format_duration, get_video_info
+from src.utils import are_files_identical, format_duration, get_video_info
 from src.video_similarity import VideoSimilarity
 
 
@@ -58,12 +58,17 @@ class TestImageSimilarity(unittest.TestCase):
 
     def test_all_methods(self):
         """所有算法应能正常运行不抛异常。"""
-        methods = ["phash", "dhash", "ahash", "whash", "ssim", "orb"]
+        methods = ["phash", "dhash", "ahash", "whash", "histogram", "ssim", "orb"]
         for method in methods:
             with self.subTest(method=method):
                 score = self.sim.compare(self.img_same_1, self.img_same_2, method=method)
                 self.assertGreaterEqual(score, 0.0)
                 self.assertLessEqual(score, 1.0)
+
+    def test_exact_duplicate_helper(self):
+        """字节级相同文件应被 are_files_identical 识别。"""
+        self.assertTrue(are_files_identical(self.img_same_1, self.img_same_2))
+        self.assertFalse(are_files_identical(self.img_same_1, self.img_diff))
 
 
 class TestVideoSimilarity(unittest.TestCase):

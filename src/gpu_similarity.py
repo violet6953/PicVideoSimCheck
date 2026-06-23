@@ -13,6 +13,8 @@ import torchvision.transforms as T
 from PIL import Image
 from torchvision import models
 
+from services.feature_cache_service import load_feature, save_feature
+
 from .utils import get_worker_cpu_count
 
 # Cap worker threads at 90% of CPU cores to keep the system responsive
@@ -22,7 +24,7 @@ _CPU_COUNT = get_worker_cpu_count()
 class GPUSimilarity:
     """Extract image features with ResNet50 pre-trained model, compute cosine similarity."""
 
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, cache_enabled: bool = True):
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -57,7 +59,9 @@ class GPUSimilarity:
             ),
         ])
 
+        # Session-level in-memory cache of final feature vectors, keyed by Path.
         self._feature_cache: dict[Path, np.ndarray] = {}
+        self._cache_enabled = cache_enabled
         # Reuse thread pool across batches to avoid repeated creation overhead
         self._load_pool = ThreadPoolExecutor(max_workers=_CPU_COUNT)
 
@@ -81,42 +85,62 @@ class GPUSimilarity:
     ) -> np.ndarray:
         features: list[np.ndarray] = []
         total = len(image_paths)
+        cache_hits = 0
 
         # Pre-allocate pinned memory buffer for faster CPU->GPU transfer
         pin_memory = self.using_cuda
 
         with torch.no_grad():
             for batch_start in range(0, total, batch_size):
-                if progress_callback and progress_callback(batch_start, total, None):
+                metadata = {"cache_hits": cache_hits}
+                if progress_callback and progress_callback(batch_start, total, metadata):
                     raise CancelledError()
 
                 batch_paths = image_paths[batch_start : batch_start + batch_size]
                 batch_size_actual = len(batch_paths)
 
-                # Phase 1: Multi-threaded CPU image loading (reuse pool)
-                tensors = [None] * batch_size_actual
+                # batch_features[idx] holds the final feature vector when already
+                # available (memory or disk cache). None means we still need to
+                # load and infer this image.
+                batch_features: list[np.ndarray | None] = [None] * batch_size_actual
+                tensors: list[torch.Tensor | None] = [None] * batch_size_actual
                 future_to_idx: dict = {}
+
+                # Phase 1: Resolve cache or schedule CPU loading
                 for idx, p in enumerate(batch_paths):
                     p = Path(p)
-                    if p in self._feature_cache:
-                        tensors[idx] = self._feature_cache[p]
+                    cached = self._feature_cache.get(p)
+                    if cached is None and self._cache_enabled:
+                        cached = load_feature(p)
+                        if cached is not None:
+                            self._feature_cache[p] = cached
+                    if cached is not None:
+                        batch_features[idx] = cached
+                        cache_hits += 1
                     else:
                         future = self._load_pool.submit(self._load_image_cpu, p)
                         future_to_idx[future] = idx
 
                 for future in future_to_idx:
                     idx = future_to_idx[future]
-                    result = future.result()
-                    tensors[idx] = result
+                    tensors[idx] = future.result()
 
                 # Phase 2: Stack valid tensors and move to GPU
-                valid_tensors = [t for t in tensors if t is not None]
-                if not valid_tensors:
-                    # All failed in this batch
-                    for _ in batch_paths:
-                        features.append(np.zeros(2048, dtype=np.float32))
+                valid_indices: list[int] = [
+                    idx for idx, t in enumerate(tensors) if t is not None
+                ]
+                if not valid_indices:
+                    # All failed or were cached in this batch
+                    for idx in range(batch_size_actual):
+                        if batch_features[idx] is not None:
+                            features.append(batch_features[idx])
+                        else:
+                            zero_feat = np.zeros(2048, dtype=np.float32)
+                            self._feature_cache[Path(batch_paths[idx])] = zero_feat
+                            features.append(zero_feat)
                     continue
 
+                valid_tensors = [tensors[idx] for idx in valid_indices]
                 batch_input = torch.stack(valid_tensors, dim=0)
                 if pin_memory:
                     batch_input = batch_input.pin_memory()
@@ -125,20 +149,33 @@ class GPUSimilarity:
                 # Phase 3: GPU inference
                 batch_feats = self.model(batch_input).cpu().numpy()
 
-                # Map results back (handle failures)
+                # Map results back, save to disk, and fill missing features
                 feat_idx = 0
-                for idx, p in enumerate(batch_paths):
-                    p = Path(p)
-                    if p in self._feature_cache:
-                        features.append(self._feature_cache[p])
+                for idx in range(batch_size_actual):
+                    p = Path(batch_paths[idx])
+                    if batch_features[idx] is not None:
+                        features.append(batch_features[idx])
                     elif tensors[idx] is not None:
-                        self._feature_cache[p] = batch_feats[feat_idx]
-                        features.append(batch_feats[feat_idx])
+                        feat = batch_feats[feat_idx]
+                        self._feature_cache[p] = feat
+                        if self._cache_enabled:
+                            save_feature(p, feat)
+                        features.append(feat)
                         feat_idx += 1
                     else:
                         zero_feat = np.zeros(2048, dtype=np.float32)
                         self._feature_cache[p] = zero_feat
+                        if self._cache_enabled:
+                            save_feature(p, zero_feat)
                         features.append(zero_feat)
+
+        # Final progress report with total cache hits.
+        if progress_callback:
+            progress_callback(
+                total,
+                total,
+                {"cache_hits": cache_hits},
+            )
 
         # Free cached GPU memory once after all batches (PyTorch allocator
         # reuses cached allocations; per-batch empty_cache stalls the pipeline)

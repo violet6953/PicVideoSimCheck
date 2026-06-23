@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -137,6 +138,47 @@ def format_file_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     else:
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+# ---------------------------------------------------------------------------
+# Exact duplicate detection
+# ---------------------------------------------------------------------------
+
+_HASH_BLOCK_SIZE = 65536
+
+
+def file_hash(path: str | Path, algorithm: str = "blake2b") -> str:
+    """Return the hex digest of a file's contents."""
+    hasher = hashlib.new(algorithm)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_BLOCK_SIZE), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def are_files_identical(path1: str | Path, path2: str | Path) -> bool:
+    """Check whether two files are byte-for-byte identical.
+
+    Uses a fast size check first; only computes a content hash when the
+    sizes match. This is useful as a robust fallback for perceptual
+    similarity methods: truly identical images always compare as similar,
+    regardless of the chosen algorithm or threshold.
+    """
+    p1, p2 = Path(path1), Path(path2)
+    try:
+        stat1, stat2 = p1.stat(), p2.stat()
+    except Exception:
+        return False
+
+    if stat1.st_size != stat2.st_size:
+        return False
+
+    # On platforms where st_ino/dev are meaningful, identical inode means
+    # the same underlying file (hard link), so no need to read contents.
+    if stat1.st_ino == stat2.st_ino and stat1.st_dev == stat2.st_dev:
+        return True
+
+    return file_hash(p1) == file_hash(p2)
 
 
 def format_duration(seconds: float) -> str:

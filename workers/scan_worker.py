@@ -15,6 +15,7 @@ from PySide6.QtCore import QThread, Signal
 from services.blocklist_service import is_group_blocked, load_blocklist, save_blocklist
 from src.processor import BatchProcessor, CancelledError
 from src.utils import (
+    file_hash,
     format_duration,
     format_file_size,
     get_image_info,
@@ -102,8 +103,17 @@ class ScanWorker(QThread):
                 self.finished_with_results.emit([])
                 return
 
-            # ===== 阶段2-3: 图片处理 =====
+            # ===== 阶段1.5: 检测字节级完全相同的图片 =====
+            # 这能保证“同一图片仅文件名不同”的情况一定被检出，即使缓存或
+            # 感知算法出现边缘错误也仍然正确。
             image_duplicates: list[tuple[Path, Path, float]] = []
+            exact_duplicate_count = 0
+            if total_images >= 2:
+                image_duplicates, exact_duplicate_count = self._find_exact_duplicates(
+                    image_files, total_images
+                )
+
+            # ===== 阶段2-3: 图片处理 =====
             if total_images >= 2:
                 self._emit_progress(
                     stage="图片特征提取",
@@ -120,11 +130,15 @@ class ScanWorker(QThread):
                     gpu_sim = GPUSimilarity()
 
                     def img_extract_progress(current: int, total: int, metadata: dict | None = None) -> bool:
+                        cache_hits = metadata.get("cache_hits", 0) if metadata else 0
+                        msg = f"正在提取图片特征... {current}/{total}"
+                        if cache_hits > 0:
+                            msg += f"（{cache_hits} 已缓存）"
                         self._emit_progress(
                             stage="图片特征提取",
                             current=current,
                             total=total,
-                            message=f"正在提取图片特征... {current}/{total}",
+                            message=msg,
                         )
                         return self.cancel_event.is_set()
 
@@ -214,11 +228,15 @@ class ScanWorker(QThread):
                             message=f"正在预计算 {self.method} 特征... 0/{total_images}",
                         )
                         precomputed_hashes = processor.similarity.precompute_hashes(image_files)
+                        cache_hits = getattr(processor.similarity, "last_cache_hits", 0)
+                        msg = f"正在比较图片... 0/{total_images} 张（预计算完成，共 {total_pairs} 对）"
+                        if cache_hits > 0:
+                            msg += f"（{cache_hits} 已缓存）"
                         self._emit_progress(
                             stage="图片相似度计算",
                             current=0,
                             total=total_images,
-                            message=f"正在比较图片... 0/{total_images} 张（预计算完成，共 {total_pairs} 对）",
+                            message=msg,
                         )
 
                     for i in range(total_images):
@@ -267,6 +285,8 @@ class ScanWorker(QThread):
                 def video_progress(current: int, total: int, metadata: dict | None = None) -> bool:
                     n = total // 3
                     phase = metadata.get("phase", "") if metadata else ""
+                    cached_count = metadata.get("cached_count", 0) if metadata else 0
+                    cached_suffix = f"（{cached_count} 已缓存）" if cached_count > 0 else ""
 
                     if current < n:
                         # Keyframe phase: stats show actual keyframe count
@@ -274,14 +294,14 @@ class ScanWorker(QThread):
                         frames_total = metadata.get("frames_total", n) if metadata else n
                         detail_current = frames_completed
                         detail_total = frames_total
-                        message = f"正在提取第 {current} 个视频的关键帧（共 {n} 个视频）"
+                        message = f"正在提取第 {current} 个视频的关键帧（共 {n} 个视频）{cached_suffix}"
                     elif current < 2 * n:
                         # Feature phase: stats show actual frame count being processed
                         frames_completed = metadata.get("frames_completed", current - n) if metadata else current - n
                         frames_total = metadata.get("frames_total", n) if metadata else n
                         detail_current = frames_completed
                         detail_total = frames_total
-                        message = f"正在提取第 {current - n} 个视频的特征（共 {n} 个视频）"
+                        message = f"正在提取第 {current - n} 个视频的特征（共 {n} 个视频）{cached_suffix}"
                     else:
                         # Compare phase: stats show pair count
                         pairs_completed = metadata.get("pairs_completed", current - 2 * n) if metadata else current - 2 * n
@@ -486,6 +506,9 @@ class ScanWorker(QThread):
             else:
                 msg += "，未发现相似文件"
 
+            if exact_duplicate_count > 0:
+                msg += f"（其中 {exact_duplicate_count} 对为字节级完全相同）"
+
             if blocked_count > 0:
                 msg += f"（已排除 {blocked_count} 组误报）"
 
@@ -501,6 +524,74 @@ class ScanWorker(QThread):
             self.stopped.emit()
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+    def _find_exact_duplicates(
+        self,
+        image_files: list[Path],
+        total_images: int,
+    ) -> tuple[list[tuple[Path, Path, float]], int]:
+        """Find byte-for-byte identical images by size + content hash.
+
+        Returns a list of duplicate pairs (with score 1.0) and the number of
+        pairs found. Only files that share a size are hashed, so the cost is
+        proportional to the number of potential duplicates rather than the
+        total file count.
+        """
+        duplicates: list[tuple[Path, Path, float]] = []
+
+        size_groups: dict[int, list[int]] = {}
+        for idx, f in enumerate(image_files):
+            if self.cancel_event.is_set():
+                raise CancelledError()
+            try:
+                size = f.stat().st_size
+            except Exception:
+                continue
+            size_groups.setdefault(size, []).append(idx)
+
+        candidates = [
+            idx
+            for indices in size_groups.values()
+            if len(indices) > 1
+            for idx in indices
+        ]
+        if not candidates:
+            return duplicates, 0
+
+        self._emit_progress(
+            stage="图片特征提取",
+            current=0,
+            total=total_images,
+            message=f"正在检测完全相同的图片... {len(candidates)} 个候选",
+        )
+
+        def _hash_task(idx: int) -> tuple[int, str]:
+            return idx, file_hash(image_files[idx])
+
+        cpu_count = get_worker_cpu_count()
+        with ThreadPoolExecutor(max_workers=cpu_count) as executor:
+            hashes = list(executor.map(_hash_task, candidates))
+
+        hash_groups: dict[tuple[int, str], list[int]] = {}
+        for idx, h in hashes:
+            if self.cancel_event.is_set():
+                raise CancelledError()
+            size = image_files[idx].stat().st_size
+            hash_groups.setdefault((size, h), []).append(idx)
+
+        count = 0
+        for indices in hash_groups.values():
+            if len(indices) < 2:
+                continue
+            indices.sort()
+            for i in range(len(indices)):
+                for j in range(i + 1, len(indices)):
+                    duplicates.append(
+                        (image_files[indices[i]], image_files[indices[j]], 1.0)
+                    )
+                    count += 1
+
+        return duplicates, count
 
     def _emit_progress(
         self,

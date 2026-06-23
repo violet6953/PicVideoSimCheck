@@ -10,7 +10,7 @@ icon_path = os.path.join(project_root, 'build', 'icon.ico')
 has_icon = os.path.exists(icon_path)
 
 # ── Version info ──────────────────────────────────────────────────────────
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 APP_NAME = "PicSimProcess"
 APP_COMPANY = "PicSimProcess"
 APP_DESCRIPTION = "Image and Video Similarity Detection Tool (GPU Edition)"
@@ -102,13 +102,14 @@ a = Analysis(
         'concurrent.futures', 'multiprocessing',
         'src.similarity', 'src.gpu_similarity', 'src.processor',
         'src.video_similarity', 'src.utils', 'src.memory_utils',
-        'services.blocklist_service',
+        'services.blocklist_service', 'services.feature_cache_service',
         'workers.scan_worker',
-        'gui.main_window', 'gui.styles',
+        'gui.main_window', 'gui.styles', 'gui.win_dark_titlebar', 'gui.settings_dialog',
         'gui.settings_panel', 'gui.progress_panel', 'gui.results_panel',
         'gui.blocklist_panel', 'gui.group_card', 'gui.result_item',
         'gui.preview_dialog', 'gui.flow_layout', 'gui.thumbnail_loader',
         'gui.animated_tabs', 'gui.animated_button', 'gui.explorer_utils',
+        'gui.metadata_loader',
         'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
         'torch', 'torch._C', 'torch._C._cuda', 'torch._C._nn',
         'torch.cuda', 'torch.cuda.amp', 'torch.cuda.amp.autocast_mode',

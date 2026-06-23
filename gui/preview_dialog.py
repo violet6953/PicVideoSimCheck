@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from .explorer_utils import open_folder_and_select
+from .win_dark_titlebar import set_dark_title_bar
 
 
 def _format_time(ms: int) -> str:
@@ -292,6 +293,7 @@ class PreviewDialog(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         QTimer.singleShot(0, self._update_geometry)
+        set_dark_title_bar(int(self.winId()))
 
     def _center_on_parent_screen(self) -> None:
         """Resize and center the dialog on the screen where the parent window is."""

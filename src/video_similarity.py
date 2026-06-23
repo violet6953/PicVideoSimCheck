@@ -14,6 +14,8 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 
+from services.feature_cache_service import load_video_features, save_video_features
+
 from .gpu_similarity import GPUSimilarity
 from .memory_utils import (
     AdaptiveBatchSizer,
@@ -311,9 +313,11 @@ class VideoSimilarity:
         """Find duplicate/similar video pairs with memory-aware batch processing.
 
         Optimizations:
-        1. Parallel keyframe extraction inside each batch (multi-threaded).
-        2. Memory monitoring every N batches instead of every batch.
-        3. No forced page reclaim or GC per batch — only when under pressure.
+        1. Persistent per-video feature cache: unchanged videos reuse extracted
+           keyframe features across scans.
+        2. Parallel keyframe extraction inside each batch (multi-threaded).
+        3. Memory monitoring every N batches instead of every batch.
+        4. No forced page reclaim or GC per batch — only when under pressure.
         """
         n = len(video_paths)
         if n < 2:
@@ -322,38 +326,97 @@ class VideoSimilarity:
         # ---- Phase 0: batch sizing ----
         memory_limit = get_video_processing_memory_limit(ratio=0.80)
         avg_width, avg_height = self._sample_video_dimensions(video_paths)
+        inference_batch_size = batch_size
+
+        logger.info(
+            "Processing %d videos (memory limit: %s)",
+            n, f"{memory_limit / (1024**3):.1f} GB",
+        )
+
+        # ---- Pre-check persistent cache ----
+        # Videos already in cache skip keyframe extraction and feature inference.
+        video_features: dict[int, np.ndarray] = {}
+        empty_videos: set[int] = set()
+        uncached_indices: list[int] = []
+
+        for idx, path in enumerate(video_paths):
+            cached = load_video_features(
+                path,
+                self.frames_per_second,
+                self.max_frames_per_video,
+                self.min_frames_per_video,
+            )
+            if cached is not None and cached.shape[0] > 0:
+                video_features[idx] = cached
+            else:
+                uncached_indices.append(idx)
+
+        cached_count = len(video_features)
+        uncached_count = len(uncached_indices)
+        total_progress_units = n * 3
+
+        # Report cached videos as complete for Phase 1 and Phase 2.
+        if progress_callback and cached_count > 0:
+            cached_frames = sum(
+                len(video_features[idx]) for idx in video_features
+            )
+            progress_callback(
+                cached_count,
+                total_progress_units,
+                {
+                    "phase": "keyframes",
+                    "videos_completed": cached_count,
+                    "videos_total": n,
+                    "frames_completed": cached_frames,
+                    "frames_total": n * self.max_frames_per_video,
+                    "cached_count": cached_count,
+                },
+            )
+            progress_callback(
+                n + cached_count,
+                total_progress_units,
+                {
+                    "phase": "features",
+                    "videos_completed": cached_count,
+                    "videos_total": n,
+                    "frames_completed": cached_frames,
+                    "frames_total": n * self.max_frames_per_video,
+                    "cached_count": cached_count,
+                },
+            )
+
+        # If every video is cached, jump straight to comparison.
+        if uncached_count == 0:
+            return self._compare_cached_videos(
+                video_paths,
+                video_features,
+                threshold,
+                progress_callback,
+                total_progress_units,
+            )
+
+        # Recalculate batch size based only on videos that need processing.
         video_batch_size = calculate_batch_size(
-            video_count=n,
+            video_count=uncached_count,
             memory_limit=memory_limit,
             avg_frame_count=self.max_frames_per_video,
             avg_width=avg_width,
             avg_height=avg_height,
         )
-        inference_batch_size = batch_size
-
-        logger.info(
-            "Processing %d videos in batches of %d (memory limit: %s)",
-            n, video_batch_size, f"{memory_limit / (1024**3):.1f} GB",
-        )
-
-        # ---- Phase 1: Extract features batch by batch ----
-        video_features: dict[int, np.ndarray] = {}
-        empty_videos: set[int] = set()
 
         gpu_limits = get_gpu_memory_limit(gpu_ratio=0.90) if self.gpu_sim.using_cuda else None
         sizer = AdaptiveBatchSizer(video_batch_size, memory_limit, gpu_memory_limit=gpu_limits)
 
-        total_progress_units = n * 3
         batch_num = 0
         batch_start = 0
 
         # Only monitor memory every N batches to reduce syscall overhead
         MONITOR_EVERY = 3
 
-        while batch_start < n:
+        while batch_start < uncached_count:
             current_batch_size = sizer.batch_size
-            batch_end = min(batch_start + current_batch_size, n)
-            batch_indices = list(range(batch_start, batch_end))
+            batch_end = min(batch_start + current_batch_size, uncached_count)
+            batch_indices = uncached_indices[batch_start:batch_end]
             batch_num += 1
 
             should_monitor = (batch_num % MONITOR_EVERY == 1) or sizer._has_reduced
@@ -365,7 +428,7 @@ class VideoSimilarity:
                 completed_in_batch: int, batch_total: int, metadata: dict | None = None
             ) -> bool:
                 if progress_callback:
-                    global_current = batch_start + completed_in_batch
+                    global_current = cached_count + batch_start + completed_in_batch
                     frames_completed = metadata.get("frames_completed", 0) if metadata else 0
                     extra = {
                         "phase": "keyframes",
@@ -373,6 +436,7 @@ class VideoSimilarity:
                         "videos_total": n,
                         "frames_completed": frames_completed,
                         "frames_total": n * self.max_frames_per_video,
+                        "cached_count": cached_count,
                     }
                     return progress_callback(global_current, total_progress_units, extra)
                 return False
@@ -388,7 +452,7 @@ class VideoSimilarity:
 
             # Final Phase 1 progress report for this batch (keyframe extraction: 0 ~ n)
             if progress_callback:
-                progress_current = batch_end
+                progress_current = cached_count + batch_end
                 extra = {
                     "phase": "keyframes",
                     "videos_completed": progress_current,
@@ -412,13 +476,14 @@ class VideoSimilarity:
                     # Map frame progress within this batch to Phase 2 video progress
                     fraction = frame_current / frame_total if frame_total > 0 else 0
                     videos_processed = batch_start + fraction * (batch_end - batch_start)
-                    global_current = int(n + videos_processed)
+                    global_current = int(n + cached_count + videos_processed)
                     extra = {
                         "phase": "features",
                         "frames_completed": frame_current,
                         "frames_total": frame_total,
-                        "videos_completed": int(videos_processed),
+                        "videos_completed": int(cached_count + videos_processed),
                         "videos_total": n,
+                        "cached_count": cached_count,
                     }
                     return progress_callback(global_current, total_progress_units, extra)
 
@@ -427,21 +492,36 @@ class VideoSimilarity:
                     batch_size=inference_batch_size,
                     progress_callback=_frame_feature_progress,
                 )
+
+                # Group features by video, stack, save to cache, and store.
+                batch_video_features: dict[int, list[np.ndarray]] = {}
                 for feat, (vi_in_batch, _) in zip(features, mapping):
                     actual_idx = batch_indices[vi_in_batch]
-                    if actual_idx not in video_features:
-                        video_features[actual_idx] = []
-                    video_features[actual_idx].append(feat)
+                    if actual_idx not in batch_video_features:
+                        batch_video_features[actual_idx] = []
+                    batch_video_features[actual_idx].append(feat)
+
+                for idx, feats in batch_video_features.items():
+                    stacked = np.stack(feats, axis=0)
+                    video_features[idx] = stacked
+                    save_video_features(
+                        video_paths[idx],
+                        stacked,
+                        self.frames_per_second,
+                        self.max_frames_per_video,
+                        self.min_frames_per_video,
+                    )
 
                 # Final Phase 2 progress report for this batch
                 if progress_callback:
-                    progress_current = n + batch_end
+                    progress_current = n + cached_count + batch_end
                     extra = {
                         "phase": "features",
                         "frames_completed": frame_total,
                         "frames_total": frame_total,
-                        "videos_completed": batch_end,
+                        "videos_completed": cached_count + batch_end,
                         "videos_total": n,
+                        "cached_count": cached_count,
                     }
                     if progress_callback(progress_current, total_progress_units, extra):
                         raise CancelledError()
@@ -464,30 +544,41 @@ class VideoSimilarity:
 
             batch_start = batch_end
 
-        # ---- Phase 2: Compare all video pairs ----
+        return self._compare_cached_videos(
+            video_paths,
+            video_features,
+            threshold,
+            progress_callback,
+            total_progress_units,
+        )
+
+    def _compare_cached_videos(
+        self,
+        video_paths: list[str | Path],
+        video_features: dict[int, np.ndarray],
+        threshold: float,
+        progress_callback: Callable[[int, int, dict | None], bool] | None,
+        total_progress_units: int,
+    ) -> list[tuple[Path, Path, float]]:
+        """Compare all videos whose features are already available."""
         valid_indices = sorted(video_features.keys())
         m = len(valid_indices)
         if m < 2:
             logger.info("Only %d valid videos, no pairs to compare", m)
             return []
 
+        n = len(video_paths)
         total_pairs = m * (m - 1) // 2
         pair_idx = 0
         duplicates: list[tuple[Path, Path, float]] = []
 
-        stacked_features = {
-            idx: np.stack(video_features[idx], axis=0)
-            for idx in valid_indices
-        }
-        del video_features
-
         for i_idx in range(m):
             vi = valid_indices[i_idx]
-            feats_i = stacked_features[vi]
+            feats_i = video_features[vi]
 
             for j_idx in range(i_idx + 1, m):
                 vj = valid_indices[j_idx]
-                feats_j = stacked_features[vj]
+                feats_j = video_features[vj]
 
                 score = self.compute_video_similarity(feats_i, feats_j)
                 if score >= threshold:
@@ -515,27 +606,12 @@ class VideoSimilarity:
             if progress_callback(total_progress_units, total_progress_units, extra):
                 raise CancelledError()
 
-        del stacked_features
         if self.gpu_sim.using_cuda:
             torch.cuda.empty_cache()
 
         duplicates.sort(key=lambda x: x[2], reverse=True)
         logger.info("Found %d duplicate video pairs", len(duplicates))
         return duplicates
-
-    def find_duplicates_large(
-        self,
-        video_paths: list[str | Path],
-        threshold: float = 0.90,
-        batch_size: int = 64,
-        progress_callback: Callable[[int, int, dict | None], bool] | None = None,
-    ) -> list[tuple[Path, Path, float]]:
-        return self.find_duplicates(
-            video_paths,
-            threshold=threshold,
-            batch_size=batch_size,
-            progress_callback=progress_callback,
-        )
 
 
 class CancelledError(Exception):

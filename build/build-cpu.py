@@ -12,6 +12,9 @@ BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
 DIST_DIR = os.path.join(PROJECT_ROOT, 'dist-cpu')
 SPEC_FILE = os.path.join(BUILD_DIR, 'PicSimProcess-CPU.spec')
 
+sys.path.insert(0, BUILD_DIR)
+from icon_utils import ensure_build_icon  # noqa: E402
+
 
 def clean():
     """Remove ALL old build artifacts to prevent stale Flask/web UI cache."""
@@ -122,6 +125,9 @@ def main():
     except ImportError:
         print("\n[FAIL] PyInstaller not found. Installing...")
         subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyinstaller'])
+
+    ensure_build_icon(PROJECT_ROOT)
+    print(f"   Icon regenerated: {os.path.join(BUILD_DIR, 'icon.ico')}")
 
     clean()
     build()

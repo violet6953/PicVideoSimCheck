@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from .utils import configure_cpu_limits, get_worker_cpu_count
+from .utils import are_files_identical, configure_cpu_limits, get_worker_cpu_count
 
 # Configure CPU limits *before* importing numeric libraries so OpenBLAS/MKL
 # respect the thread caps.
@@ -19,11 +19,13 @@ import numpy as np
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
+from services.feature_cache_service import load_hash, save_hash
+
 
 class ImageSimilarity:
     """提供多种图片相似度计算方法。"""
 
-    def __init__(self, method: str = "phash", threshold: float = 0.85):
+    def __init__(self, method: str = "phash", threshold: float = 0.85, cache_enabled: bool = True):
         """
         初始化相似度计算器。
 
@@ -31,9 +33,12 @@ class ImageSimilarity:
             method: 默认使用的相似度算法，可选 "phash", "dhash", "ahash", "whash",
                 "histogram", "ssim", "orb"
             threshold: 判定为相似的阈值 (0~1)
+            cache_enabled: 是否为哈希方法启用磁盘缓存
         """
         self.method = method.lower()
         self.threshold = threshold
+        self._cache_enabled = cache_enabled
+        self.last_cache_hits = 0
         self._hash_funcs: dict[str, Callable] = {
             "phash": imagehash.phash,
             "dhash": imagehash.dhash,
@@ -55,20 +60,42 @@ class ImageSimilarity:
         """PIL Image 转为 OpenCV BGR 格式。"""
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
+    def _compute_hash(self, image_input: str | Path | bytes, hash_type: str) -> imagehash.ImageHash | None:
+        """Compute a perceptual hash with disk caching when the input is a path."""
+        if isinstance(image_input, (str, Path)) and self._cache_enabled:
+            p = Path(image_input)
+            cached = load_hash(p, hash_type)
+            if cached is not None:
+                return cached
+
+        try:
+            img = self._load_image(image_input)
+        except Exception:
+            return None
+
+        hash_func = self._hash_funcs.get(hash_type)
+        if hash_func is None:
+            return None
+
+        h = hash_func(img)
+        if isinstance(image_input, (str, Path)) and self._cache_enabled:
+            try:
+                save_hash(Path(image_input), hash_type, h)
+            except Exception:
+                pass
+        return h
+
     def hash_similarity(self, img1, img2, hash_type: str | None = None) -> float:
         """
         基于感知哈希的相似度。
         返回 0~1 之间的值，1 表示完全相同。
         """
-        hash_func = self._hash_funcs.get(hash_type or self.method)
-        if hash_func is None:
-            raise ValueError(f"不支持的哈希类型: {hash_type}")
+        hash_type = hash_type or self.method
 
-        p1 = self._load_image(img1)
-        p2 = self._load_image(img2)
-
-        h1 = hash_func(p1)
-        h2 = hash_func(p2)
+        h1 = self._compute_hash(img1, hash_type)
+        h2 = self._compute_hash(img2, hash_type)
+        if h1 is None or h2 is None:
+            return 0.0
 
         # Hamming distance / max bits -> dissimilarity
         max_bits = max(len(h1.hash) ** 2, len(h2.hash) ** 2)
@@ -88,11 +115,11 @@ class ImageSimilarity:
         p1 = p1.resize(size)
         p2 = p2.resize(size)
 
-        cv1 = self._pil_to_cv(p1)
-        cv2 = self._pil_to_cv(p2)
+        cv_img1 = self._pil_to_cv(p1)
+        cv_img2 = self._pil_to_cv(p2)
 
-        hist1 = cv2.calcHist([cv1], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        hist2 = cv2.calcHist([cv2], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+        hist1 = cv2.calcHist([cv_img1], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+        hist2 = cv2.calcHist([cv_img2], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
 
         hist1 = cv2.normalize(hist1, hist1).flatten()
         hist2 = cv2.normalize(hist2, hist2).flatten()
@@ -160,16 +187,32 @@ class ImageSimilarity:
         """预计算所有图片的感知哈希值（仅限哈希方法）。
 
         返回字典: {str(path): ImageHash}，失败的图片对应值为 None。
+        支持磁盘缓存，已缓存且文件未修改的图片会直接读取缓存。
+
+        调用后可通过 ``self.last_cache_hits`` 读取缓存命中数。
         """
         hash_func = self._hash_funcs.get(self.method)
         if hash_func is None:
             raise ValueError(f"方法 {self.method} 不支持预计算")
 
+        self.last_cache_hits = 0
         result: dict[str, imagehash.ImageHash | None] = {}
         for path in image_paths:
             try:
-                img = self._load_image(path)
-                result[str(path)] = hash_func(img)
+                p = Path(path)
+                cached = None
+                if self._cache_enabled:
+                    cached = load_hash(p, self.method)
+                if cached is not None:
+                    result[str(path)] = cached
+                    self.last_cache_hits += 1
+                    continue
+
+                img = self._load_image(p)
+                h = hash_func(img)
+                result[str(path)] = h
+                if self._cache_enabled:
+                    save_hash(p, self.method, h)
             except Exception:
                 result[str(path)] = None
         return result
@@ -181,6 +224,14 @@ class ImageSimilarity:
         max_bits = max(len(h1.hash) ** 2, len(h2.hash) ** 2)
         distance = h1 - h2
         return 1.0 - (distance / max_bits)
+
+    def _is_exact_duplicate(self, img1, img2) -> bool:
+        """Return True if two inputs are byte-for-byte identical images."""
+        if isinstance(img1, bytes) and isinstance(img2, bytes):
+            return img1 == img2
+        if isinstance(img1, (str, Path)) and isinstance(img2, (str, Path)):
+            return are_files_identical(img1, img2)
+        return False
 
     def compare(self, img1, img2, method: str | None = None) -> float:
         """
@@ -194,6 +245,9 @@ class ImageSimilarity:
         Returns:
             0~1 之间的相似度分数
         """
+        if self._is_exact_duplicate(img1, img2):
+            return 1.0
+
         method = (method or self.method).lower()
 
         if method in self._hash_funcs:
