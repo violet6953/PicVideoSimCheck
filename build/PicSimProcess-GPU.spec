@@ -10,7 +10,7 @@ icon_path = os.path.join(project_root, 'build', 'icon.ico')
 has_icon = os.path.exists(icon_path)
 
 # ── Version info ──────────────────────────────────────────────────────────
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 APP_NAME = "PicSimProcess"
 APP_COMPANY = "PicSimProcess"
 APP_DESCRIPTION = "Image and Video Similarity Detection Tool (GPU Edition)"
@@ -69,6 +69,13 @@ for mod in stdlib_modules_to_include:
     if os.path.exists(src):
         stdlib_datas.append((src, '.'))
 
+# Optional offline ResNet50 weights. Build-gpu.py downloads these before PyInstaller runs;
+# if the download failed (no network), omit the entry so the build does not fail.
+checkpoint_dir = os.path.join(project_root, 'build', 'checkpoints')
+checkpoint_datas = []
+if os.path.isdir(checkpoint_dir):
+    checkpoint_datas.append((checkpoint_dir, os.path.join('torch', 'hub', 'checkpoints')))
+
 a = Analysis(
     [os.path.join(project_root, 'desktop.py')],
     pathex=[project_root],
@@ -85,6 +92,7 @@ a = Analysis(
         (os.path.join(project_root, 'services'), 'services'),
         (os.path.join(project_root, 'workers'), 'workers'),
         (os.path.join(project_root, 'gui'), 'gui'),
+        *checkpoint_datas,
         *torch_datas,
         *tv_datas,
         *stdlib_datas,

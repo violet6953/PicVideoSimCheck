@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import errno
+import time
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
@@ -16,6 +20,133 @@ from PySide6.QtWidgets import (
 )
 
 from .group_card import GroupCard
+from .thumbnail_loader import clear_pixmap_cache_for
+
+
+def _is_file_locked_error(exc: OSError) -> bool:
+    """Return True if *exc* indicates the file is locked by another process."""
+    if hasattr(exc, "winerror"):
+        # ERROR_SHARING_VIOLATION
+        return exc.winerror == 32
+    return exc.errno in (errno.EBUSY, errno.EAGAIN)
+
+
+def _find_locking_processes(path: str) -> list[str]:
+    """Best-effort query of processes locking *path* on Windows via RestartManager."""
+    import sys
+
+    if sys.platform != "win32":
+        return []
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rm_start = ctypes.windll.rstrtmgr.RmStartSession
+        rm_start.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_ulong, ctypes.c_wchar_p]
+        rm_start.restype = ctypes.c_uint
+
+        rm_register = ctypes.windll.rstrtmgr.RmRegisterResources
+        rm_register.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_wchar_p),
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+        ]
+        rm_register.restype = ctypes.c_uint
+
+        rm_get_list = ctypes.windll.rstrtmgr.RmGetList
+        rm_get_list.argtypes = [
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        rm_get_list.restype = ctypes.c_uint
+
+        rm_end = ctypes.windll.rstrtmgr.RmEndSession
+        rm_end.argtypes = [ctypes.c_uint]
+        rm_end.restype = ctypes.c_uint
+
+        session = ctypes.c_uint()
+        key = ctypes.create_unicode_buffer("")
+        ret = rm_start(ctypes.byref(session), 0, key)
+        if ret != 0:
+            return []
+
+        try:
+            path_buf = ctypes.create_unicode_buffer(path)
+            ret = rm_register(session, 1, path_buf, 0, None, 0, None)
+            if ret != 0:
+                return []
+
+            needed = ctypes.c_uint()
+            proc_count = ctypes.c_uint()
+            reboot = ctypes.c_ulong()
+            ret = rm_get_list(
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(proc_count),
+                None,
+                ctypes.byref(reboot),
+            )
+            if ret != 122:  # ERROR_MORE_DATA
+                return []
+
+            class RM_PROCESS_INFO(ctypes.Structure):
+                _fields_ = [
+                    ("Process", wintypes.DWORD),
+                    ("StartTime", wintypes.FILETIME),
+                    ("AppName", wintypes.WCHAR * 256),
+                    ("ShortServiceName", wintypes.WCHAR * 64),
+                    ("ApplicationType", wintypes.DWORD),
+                    ("AppStatus", wintypes.DWORD),
+                    ("TSSessionId", wintypes.DWORD),
+                    ("PerformanceImpact", wintypes.DWORD),
+                ]
+
+            proc_info = (RM_PROCESS_INFO * needed.value)()
+            ret = rm_get_list(
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(proc_count),
+                proc_info,
+                ctypes.byref(reboot),
+            )
+            if ret != 0:
+                return []
+
+            processes: list[str] = []
+            for i in range(proc_count.value):
+                name = proc_info[i].AppName.strip("\x00")
+                if name and name not in processes:
+                    processes.append(name)
+            return processes
+        finally:
+            rm_end(session)
+    except Exception:
+        return []
+
+
+def _delete_with_retry(path: Path) -> None:
+    """Delete *path*, retrying a few times if it is temporarily locked."""
+    last_error: Exception | None = None
+    for delay in (0.0, 0.3, 0.6, 1.2):
+        if delay:
+            time.sleep(delay)
+        try:
+            path.unlink()
+            return
+        except OSError as exc:
+            last_error = exc
+            if not _is_file_locked_error(exc):
+                raise
+    # All retries exhausted for a locked file.
+    raise last_error or OSError(errno.EBUSY, "文件被占用", str(path))
 
 
 class ResultsPanel(QFrame):
@@ -35,6 +166,7 @@ class ResultsPanel(QFrame):
         self._all_groups: list[dict] = []
         self._cards: list[GroupCard] = []
         self._load_more_btn: QPushButton | None = None
+        self._footer_widget: QWidget | None = None
         self._current_page = 0
         self._blocklist_count = 0
         self._init_ui()
@@ -119,11 +251,8 @@ class ResultsPanel(QFrame):
         self._render_page(0)
 
     def _render_page(self, page: int) -> None:
-        """Render one page of groups. Removes the load-more button first if present."""
-        if self._load_more_btn:
-            self.groups_layout.removeWidget(self._load_more_btn)
-            self._load_more_btn.deleteLater()
-            self._load_more_btn = None
+        """Render one page of groups. Removes the load-more footer first if present."""
+        self._remove_footer()
 
         # Remove stretch to append widgets, then re-add it at the end
         stretch = self.groups_layout.takeAt(self.groups_layout.count() - 1)
@@ -146,13 +275,27 @@ class ResultsPanel(QFrame):
 
         self._current_page = page
 
-        # Add load-more button if there are more groups
+        # Add load-more footer if there are more groups. Because not all groups
+        # are rendered, also surface a delete button here so the user can remove
+        # selected files without scrolling back to the top header.
         if end < len(self._all_groups):
             remaining = len(self._all_groups) - end
+            self._footer_widget = QWidget()
+            footer_layout = QHBoxLayout(self._footer_widget)
+            footer_layout.setContentsMargins(0, 0, 0, 0)
+            footer_layout.setSpacing(12)
+
             self._load_more_btn = QPushButton(f"加载更多（还剩 {remaining} 组）")
             self._load_more_btn.setObjectName("secondary")
             self._load_more_btn.clicked.connect(self._load_next_page)
-            self.groups_layout.addWidget(self._load_more_btn)
+            footer_layout.addWidget(self._load_more_btn, stretch=1)
+
+            delete_selected_btn = QPushButton("删除所有选中")
+            delete_selected_btn.setObjectName("danger")
+            delete_selected_btn.clicked.connect(self._confirm_delete_all_selected)
+            footer_layout.addWidget(delete_selected_btn)
+
+            self.groups_layout.addWidget(self._footer_widget)
 
         self.groups_layout.addStretch()
         if stretch and stretch.widget():
@@ -163,16 +306,21 @@ class ResultsPanel(QFrame):
         if next_page * self.GROUPS_PER_PAGE < len(self._all_groups):
             self._render_page(next_page)
 
+    def _remove_footer(self) -> None:
+        """Remove the load-more / delete footer if it is currently shown."""
+        if self._footer_widget:
+            self.groups_layout.removeWidget(self._footer_widget)
+            self._footer_widget.deleteLater()
+            self._footer_widget = None
+        self._load_more_btn = None
+
     def clear_results(self) -> None:
         for card in self._cards:
             self.groups_layout.removeWidget(card)
             card.deleteLater()
         self._cards.clear()
         self._all_groups.clear()
-        if self._load_more_btn:
-            self.groups_layout.removeWidget(self._load_more_btn)
-            self._load_more_btn.deleteLater()
-            self._load_more_btn = None
+        self._remove_footer()
         self._current_page = 0
         self.summary_label.setText("请在左侧选择文件夹并点击“开始扫描”")
         self.blocklist_info_label.setText("")
@@ -216,6 +364,33 @@ class ResultsPanel(QFrame):
         for card in self._cards:
             paths.extend(card.get_selected_paths())
         return paths
+
+    def get_selected_paths_all(self) -> list[str]:
+        """Selected paths across rendered cards, plus the default selection for
+        groups that have not been rendered yet.
+
+        Unrendered groups have no checkboxes, so we apply the same default rule a
+        rendered card uses: keep the first item (the best/largest, since the scan
+        worker pre-sorts each group with the same sort key) and select the rest.
+        """
+        paths: list[str] = []
+        rendered_first_paths: set[str] = set()
+        for card in self._cards:
+            paths.extend(card.get_selected_paths())
+            if card.items:
+                rendered_first_paths.add(card.items[0]["path"])
+
+        for g in self._all_groups:
+            items = g.get("items", [])
+            if not items:
+                continue
+            # Skip groups already shown as a card (handled via checkboxes above).
+            if items[0]["path"] in rendered_first_paths:
+                continue
+            paths.extend(item["path"] for item in items[1:])
+
+        # De-duplicate while preserving order.
+        return list(dict.fromkeys(paths))
 
     def get_all_groups_paths(self) -> list[list[str]]:
         return [
@@ -268,16 +443,45 @@ class ResultsPanel(QFrame):
         if reply == QMessageBox.StandardButton.Yes:
             self.delete_selected.emit()
 
+    def _confirm_delete_all_selected(self) -> None:
+        """Delete selected files across ALL groups, including ones not yet rendered.
+
+        Used by the footer button shown when groups are paginated, so the user can
+        clear every selected file without scrolling up or loading every page first.
+        """
+        paths = self.get_selected_paths_all()
+        if not paths:
+            QMessageBox.information(self, "提示", "请先勾选要删除的文件")
+            return
+
+        rendered_groups = len(self._cards)
+        unrendered_groups = max(0, len(self._all_groups) - rendered_groups)
+        extra = (
+            f"\n（含 {unrendered_groups} 个未加载分组中默认选中的文件）"
+            if unrendered_groups > 0
+            else ""
+        )
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除选中的 {len(paths)} 个文件吗？{extra}\n此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.delete_items(paths)
+
     def delete_items(self, paths: list[str]) -> None:
         deleted = []
         failed = []
-        from pathlib import Path
+
+        # Release any cached pixmaps/thumbnails that may hold file handles.
+        clear_pixmap_cache_for(paths)
 
         for p in paths:
             path = Path(p)
             try:
                 if path.exists() and path.is_file():
-                    path.unlink()
+                    _delete_with_retry(path)
                     deleted.append(str(path))
             except Exception as e:
                 failed.append((p, str(e)))
@@ -285,7 +489,20 @@ class ResultsPanel(QFrame):
         if deleted:
             self.remove_items(set(deleted))
         if failed:
-            QMessageBox.warning(self, "删除失败", f"{len(failed)} 个文件删除失败：\n" + "\n".join(f"{p}: {e}" for p, e in failed))
+            messages = []
+            for p, e in failed:
+                locking = _find_locking_processes(p)
+                if locking:
+                    proc_text = "、".join(locking[:3])
+                    messages.append(f"{p}\n  原因：{e}（可能被「{proc_text}」占用）")
+                else:
+                    messages.append(f"{p}\n  原因：{e}")
+            QMessageBox.warning(
+                self,
+                "删除失败",
+                f"{len(failed)} 个文件删除失败：\n\n" + "\n\n".join(messages)
+                + "\n\n请关闭播放器、浏览器或杀毒软件后重试。",
+            )
 
     def _update_summary(self) -> None:
         if not self._all_groups:

@@ -3,8 +3,22 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+
+def _setup_torch_home() -> None:
+    """Point torch.hub to bundled checkpoints when running as a PyInstaller exe."""
+    if not getattr(sys, "frozen", False):
+        return
+    exe_dir = Path(sys.executable).parent
+    bundled = exe_dir / "torch"
+    if bundled.exists():
+        os.environ.setdefault("TORCH_HOME", str(bundled))
+
+
+_setup_torch_home()
 
 from src.utils import configure_cpu_limits
 

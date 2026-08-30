@@ -31,6 +31,7 @@ build/__pycache__/
 # Auto-generated build artifacts
 src/build_info.py
 build/version_info.txt
+build/checkpoints/
 
 # Test outputs
 test_output.txt

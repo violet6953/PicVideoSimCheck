@@ -623,5 +623,8 @@ class PreviewDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self.player.stop()
+        self.player.setSource(QUrl())
         self._cleanup_slide()
+        self._original_pixmap = None
+        self.image_label.clear()
         super().closeEvent(event)

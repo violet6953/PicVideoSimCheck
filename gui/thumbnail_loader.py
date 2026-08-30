@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
+from typing import Iterable
 
 import cv2
 import numpy as np
@@ -38,16 +39,24 @@ def set_cached_pixmap(path: str, pixmap: QPixmap) -> None:
         _pixmap_cache.popitem(last=False)
 
 
+def clear_pixmap_cache_for(paths: Iterable[str]) -> None:
+    """Remove cached pixmaps for *paths* to release potential file handles."""
+    for p in paths:
+        _pixmap_cache.pop(p, None)
+
+
 def _video_first_frame(path: str) -> np.ndarray | None:
     """Extract the first frame of a video as RGB numpy array."""
+    cap = cv2.VideoCapture(path)
     try:
-        cap = cv2.VideoCapture(path)
         ret, frame = cap.read()
-        cap.release()
         if ret and frame is not None:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     except Exception:
         pass
+    finally:
+        cap.release()
+        del cap
     return None
 
 

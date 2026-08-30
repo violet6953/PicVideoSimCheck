@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import os
+import ssl
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
+from urllib.error import URLError
 
 import numpy as np
 import torch
@@ -21,6 +25,54 @@ from .utils import get_worker_cpu_count
 _CPU_COUNT = get_worker_cpu_count()
 
 
+def _resnet50_with_retry():
+    """Load ResNet50 pretrained weights with retries and optional SSL bypass.
+
+    On first use torchvision downloads the checkpoint from the PyTorch CDN.
+    In restricted networks (corporate proxies, GFW, unstable Wi-Fi) the SSL
+    handshake or download may fail with ``URLError`` / ``SSLError``. We retry
+    a few times and allow the user to disable certificate verification via an
+    environment variable.
+    """
+    weights = models.ResNet50_Weights.IMAGENET1K_V2
+    last_error: Exception | None = None
+
+    disable_ssl = os.environ.get("PICSIM_DISABLE_SSL_VERIFY") == "1"
+
+    for attempt, delay in enumerate([1.0, 2.0, 4.0], start=1):
+        with _unverified_ssl_context(enabled=disable_ssl):
+            try:
+                return models.resnet50(weights=weights)
+            except (URLError, ssl.SSLError, OSError) as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(delay)
+
+    raise RuntimeError(
+        "无法下载 ResNet50 预训练模型权重，GPU 扫描无法启动。\n\n"
+        f"原始错误：{last_error}\n\n"
+        "建议尝试以下方案之一：\n"
+        "1. 检查网络连接，或设置系统代理后重试；\n"
+        "2. 启动程序前设置环境变量 PICSIM_DISABLE_SSL_VERIFY=1 跳过 SSL 证书校验；\n"
+        "3. 暂时切换到 CPU 哈希算法（pHash / dHash / aHash）。"
+    ) from last_error
+
+
+@contextmanager
+def _unverified_ssl_context(enabled: bool):
+    """Temporarily disable HTTPS certificate verification if requested."""
+    if not enabled:
+        yield
+        return
+
+    original = ssl._create_default_https_context
+    ssl._create_default_https_context = ssl._create_unverified_context
+    try:
+        yield
+    finally:
+        ssl._create_default_https_context = original
+
+
 class GPUSimilarity:
     """Extract image features with ResNet50 pre-trained model, compute cosine similarity."""
 
@@ -30,8 +82,7 @@ class GPUSimilarity:
         else:
             self.device = torch.device(device)
 
-        weights = models.ResNet50_Weights.IMAGENET1K_V2
-        self.model = models.resnet50(weights=weights)
+        self.model = _resnet50_with_retry()
         self.model.fc = torch.nn.Identity()
         self.model = self.model.to(self.device)
         self.model.eval()

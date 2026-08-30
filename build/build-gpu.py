@@ -177,6 +177,38 @@ EDITION = "GPU"
     return build_info_path
 
 
+def ensure_resnet50_weights() -> Path | None:
+    """Download ResNet50 IMAGENET1K_V2 weights so the bundle works offline.
+
+    Returns the path to the cached checkpoint, or None if the download fails.
+    """
+    try:
+        import torch
+        from torchvision.models import ResNet50_Weights
+    except ImportError:
+        print("  Warning: torch/torchvision not installed, skipping weight pre-download")
+        return None
+
+    weights = ResNet50_Weights.IMAGENET1K_V2
+    filename = weights.url.rsplit("/", 1)[-1]
+    checkpoint_dir = BUILD_DIR / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    target_path = checkpoint_dir / filename
+
+    if target_path.exists():
+        print(f"  ResNet50 weights already cached: {target_path.name}")
+        return target_path
+
+    print(f"  Downloading ResNet50 weights to {target_path.name}...")
+    try:
+        torch.hub.download_url_to_file(weights.url, str(target_path), progress=True)
+        print(f"  Downloaded: {target_path.name}")
+        return target_path
+    except Exception as e:
+        print(f"  Warning: failed to pre-download ResNet50 weights: {e}")
+        return None
+
+
 def clean() -> None:
     """Remove old build artifacts."""
     dirs_to_remove = [
@@ -379,6 +411,10 @@ def main() -> int:
     update_iss_version(version)
     update_spec_version(version)
     inject_build_info(version)
+
+    # ── Pre-download model weights for offline use ──
+    print("\n[2.5/4] Ensuring bundled model weights...")
+    ensure_resnet50_weights()
 
     # ── Verify entry ──
     print("\n[3/4] Verifying entry script...")
