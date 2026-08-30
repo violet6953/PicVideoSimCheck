@@ -1,12 +1,15 @@
 # ============================================
 # 前置步骤：安装 PyTorch GPU 版本 (CUDA 12.x)
 # ============================================
+# 注意：PyTorch 官方 wheel 目前不支持 Python 3.13+，
+#       请使用 Python 3.11 或 3.12 创建虚拟环境，否则 pip 会安装 CPU 版本。
+#
 # 请先确保虚拟环境已激活，然后运行以下命令安装 GPU 版本的 PyTorch：
 #
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 #
-# 说明：cu121 对应 CUDA 12.1，向后兼容已安装的 CUDA 12.0。
-#       PyTorch 官方未提供 CUDA 12.0 专用 wheel，cu121 是唯一兼容方案。
+# 说明：cu121 对应 CUDA 12.1，向后兼容已安装的 CUDA 12.0/12.x/13.x。
+#       只要 NVIDIA 驱动支持 CUDA 12.1 及以上，cu121 版本的 PyTorch 即可正常调用 GPU。
 #
 # 安装完成后，再运行以下命令安装其余依赖：
 #   pip install -r requirements.txt

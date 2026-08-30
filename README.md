@@ -12,7 +12,7 @@
 | 项目 | 要求 |
 |------|------|
 | 操作系统 | Windows 10 / 11，macOS，Linux |
-| Python | 3.10 或更高版本 |
+| Python | 3.11 或 3.12（GPU 版必需，PyTorch 官方暂不支持 3.13+） |
 | GPU (可选) | NVIDIA RTX 2080 Ti 或支持 CUDA 的显卡 |
 | CUDA (可选) | 11.8 或 12.x 版本（如需 GPU 加速） |
 
@@ -33,12 +33,20 @@ source venv/bin/activate
 
 **必须先单独安装 PyTorch GPU 版本**，`requirements.txt` 中已将其排除，防止 `pip` 误装 CPU 版本。
 
+> ⚠️ **Python 版本要求**：PyTorch 官方 Windows wheel 目前不支持 Python 3.13+。请使用 Python 3.11 或 3.12 创建虚拟环境，否则 `pip` 会安装 CPU 版，导致界面提示 "CUDA not available"。
+
 ```bash
-# CUDA 12.x 版本（cu121 向后兼容 CUDA 12.0）
+# 使用 Python 3.11 或 3.12 创建虚拟环境
+python3.12 -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# 安装 CUDA 12.x 版本（cu121 向后兼容 CUDA 12.0/12.x/13.x）
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
-> **说明**：PyTorch 官方未提供 CUDA 12.0 专用 wheel 包，cu121（CUDA 12.1）向后兼容已安装的 CUDA 12.0。只要 NVIDIA 驱动支持 CUDA 12.0，cu121 版本的 PyTorch 即可正常调用 GPU。
+> **说明**：PyTorch 官方未提供 CUDA 12.0 专用 wheel 包，cu121（CUDA 12.1）向后兼容已安装的 CUDA 12.0/12.x/13.x。只要 NVIDIA 驱动支持 CUDA 12.1 及以上，cu121 版本的 PyTorch 即可正常调用 GPU。
 
 ### 3. 安装项目其余依赖
 
