@@ -18,6 +18,7 @@ class GroupCard(QFrame):
     mark_false_positive = Signal(object)  # emits self
     delete_group_selected = Signal(object)  # emits self
     preview_requested = Signal(str, list)  # path, list of paths in group
+    compare_requested = Signal(list)  # list of paths in group
     selection_changed = Signal()
 
     def __init__(self, group_index: int, group_type: str, items: list[dict], parent=None):
@@ -49,6 +50,14 @@ class GroupCard(QFrame):
         # Footer actions (create before widgets so selection signals can update delete_btn)
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
+
+        # Compare button (images only, when there are at least 2 items)
+        if not self.is_video and len(items) >= 2:
+            self.compare_btn = QPushButton("比较")
+            self.compare_btn.setObjectName("compare")
+            self.compare_btn.setProperty("class", "small")
+            self.compare_btn.clicked.connect(lambda: self.compare_requested.emit(self._paths_in_group))
+            footer_layout.addWidget(self.compare_btn)
 
         self.mark_fp_btn = QPushButton("标记为非相似（误报）")
         self.mark_fp_btn.setObjectName("secondary")

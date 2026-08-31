@@ -28,6 +28,7 @@ from workers.scan_worker import ScanWorker
 
 from .animated_tabs import AnimatedTabs
 from .blocklist_panel import BlocklistPanel
+from .compare_dialog import CompareDialog
 from .preview_dialog import PreviewDialog
 from .progress_panel import ProgressPanel
 from .results_panel import ResultsPanel
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
         self._cancel_event = threading.Event()
         self._worker: ScanWorker | None = None
         self._preview_dialog: PreviewDialog | None = None
+        self._compare_dialog: CompareDialog | None = None
         self._current_results: list[dict] = []
         self._current_folders: list[str] = []
 
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
         self.results_panel.mark_all_false_positive.connect(self._mark_all_false_positive)
         self.results_panel.delete_selected.connect(self._delete_selected)
         self.results_panel.preview_requested.connect(self._open_preview)
+        self.results_panel.compare_requested.connect(self._open_compare)
         self.results_panel.selection_changed.connect(self._update_delete_button)
         self.tabs.addTab(self.results_panel, "输出结果")
 
@@ -314,6 +317,11 @@ class MainWindow(QMainWindow):
         if self._preview_dialog is None:
             self._preview_dialog = PreviewDialog(self)
         self._preview_dialog.open_group(path, paths)
+
+    def _open_compare(self, paths: list[str]) -> None:
+        if self._compare_dialog is None:
+            self._compare_dialog = CompareDialog(self)
+        self._compare_dialog.load_group(paths)
 
     def _on_tab_changed(self, index: int) -> None:
         if index == 1:

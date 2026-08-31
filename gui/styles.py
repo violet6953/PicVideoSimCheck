@@ -253,6 +253,20 @@ QPushButton#primary:pressed {
     padding-bottom: 7px;
 }
 
+QPushButton#compare {
+    background-color: #f97316;
+}
+
+QPushButton#compare:hover {
+    background-color: #ea580c;
+}
+
+QPushButton#compare:pressed {
+    background-color: #c2410c;
+    padding-top: 9px;
+    padding-bottom: 7px;
+}
+
 QPushButton#danger {
     background-color: #ef4444;
 }

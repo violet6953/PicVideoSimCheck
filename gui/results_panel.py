@@ -155,6 +155,7 @@ class ResultsPanel(QFrame):
     mark_all_false_positive = Signal()
     delete_selected = Signal()
     preview_requested = Signal(str, list)
+    compare_requested = Signal(list)
     selection_changed = Signal()
 
     # Number of groups to render per page to keep widget creation fast.
@@ -269,6 +270,7 @@ class ResultsPanel(QFrame):
             card.mark_false_positive.connect(self._on_card_mark_fp)
             card.delete_group_selected.connect(self._on_card_delete)
             card.preview_requested.connect(self.preview_requested.emit)
+            card.compare_requested.connect(self.compare_requested.emit)
             card.selection_changed.connect(self.selection_changed.emit)
             self.groups_layout.addWidget(card)
             self._cards.append(card)
